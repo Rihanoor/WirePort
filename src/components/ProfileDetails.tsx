@@ -1,24 +1,38 @@
 import React, { useState, useEffect } from "react";
 import { 
   Shield, Globe, Calendar, Copy, Check, Eye, EyeOff, 
-  FileText, ArrowUpRight, CheckCircle2, XCircle, AlertCircle, HelpCircle
+  FileText, ArrowUpRight, CheckCircle2, XCircle, AlertCircle, HelpCircle, FileCode
 } from "lucide-react";
-import { Profile, ProxyType, ProfileStatus } from "../types";
+import { invoke } from "@tauri-apps/api/core";
+import { Profile, ProxyType, ProfileStatus, GeneratedConfigMeta } from "../types";
 
 interface ProfileDetailsProps {
   profile: Profile;
   onUpdate: (updatedProfile: Profile) => void;
   onDelete?: (id: string) => void;
+  wireproxyBinaryPath: string;
+  onStatusChange: (status: ProfileStatus) => void;
 }
 
 export const ProfileDetails: React.FC<ProfileDetailsProps> = ({ 
   profile, 
   onUpdate,
-  onDelete
+  onDelete,
+  wireproxyBinaryPath,
+  onStatusChange
 }) => {
   const [name, setName] = useState(profile.name);
   const [proxyType, setProxyType] = useState<ProxyType>(profile.proxyType);
   const [port, setPort] = useState(profile.port);
+  const [isActionLoading, setIsActionLoading] = useState(false);
+  
+  // WireProxy config file metadata state
+  const [generatedConfigMeta, setGeneratedConfigMeta] = useState<GeneratedConfigMeta | null>(null);
+  
+  const [showGenConfig, setShowGenConfig] = useState(false);
+  const [copiedGenConfig, setCopiedGenConfig] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  
   const [showConfig, setShowConfig] = useState(false);
   const [maskKey, setMaskKey] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -30,6 +44,40 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     setProxyType(profile.proxyType);
     setPort(profile.port);
   }, [profile]);
+
+  // Load existing generated WireProxy config from disk on mount or profile change
+  useEffect(() => {
+    const fetchGenConfig = async () => {
+      try {
+        const meta = await invoke<GeneratedConfigMeta | null>("load_generated_config", { 
+          profileId: profile.id 
+        });
+        setGeneratedConfigMeta(meta);
+      } catch (err) {
+        console.error("Failed to load generated config:", err);
+        setGeneratedConfigMeta(null);
+      }
+    };
+    
+    fetchGenConfig();
+  }, [profile.id]);
+
+  // Check status on mount or profile change
+  useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const currentStatus = await invoke<ProfileStatus>("get_profile_status", { profileId: profile.id });
+        onStatusChange(currentStatus);
+      } catch (err) {
+        console.error("Failed to check status:", err);
+      }
+    };
+    
+    checkStatus();
+    
+    const interval = setInterval(checkStatus, 3000);
+    return () => clearInterval(interval);
+  }, [profile.id]);
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setName(e.target.value);
@@ -57,7 +105,8 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   };
 
   const handlePortBlur = () => {
-    if (port >= 1 && port <= 65535 && port !== profile.port) {
+    // Validate port is between 1024 and 65535
+    if (port >= 1024 && port <= 65535 && port !== profile.port) {
       onUpdate({ ...profile, port, updatedAt: new Date().toISOString() });
     } else {
       setPort(profile.port);
@@ -83,6 +132,95 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     setTimeout(() => setCopiedConfig(false), 2000);
   };
 
+  const handleCopyGenConfig = () => {
+    if (generatedConfigMeta) {
+      navigator.clipboard.writeText(generatedConfigMeta.content);
+      setCopiedGenConfig(true);
+      setTimeout(() => setCopiedGenConfig(false), 2000);
+    }
+  };
+
+  const handleRegenerate = async () => {
+    if (port < 1024 || port > 65535) {
+      alert("Port must be between 1024 and 65535");
+      return;
+    }
+
+    setIsRegenerating(true);
+    try {
+      const timestamp = new Date().toISOString();
+      const meta = await invoke<GeneratedConfigMeta>("generate_wireproxy_config", {
+        profileId: profile.id,
+        proxyType: proxyType,
+        port: port,
+        configContent: profile.configContent,
+        generatedAt: timestamp
+      });
+      
+      setGeneratedConfigMeta(meta);
+
+      // Persist type and port in profiles.json if changed in UI
+      if (profile.port !== port || profile.proxyType !== proxyType) {
+        onUpdate({ 
+          ...profile, 
+          port: port, 
+          proxyType: proxyType, 
+          updatedAt: timestamp 
+        });
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert(err.toString() || "Failed to generate config file");
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  const handleStartProxy = async () => {
+    if (!wireproxyBinaryPath) {
+      alert("Please configure the WireProxy binary path in settings first.");
+      return;
+    }
+
+    if (configStatus !== "ready" || !generatedConfigMeta) {
+      alert("Please generate or regenerate the proxy configuration file first.");
+      return;
+    }
+
+    setIsActionLoading(true);
+    onStatusChange("starting");
+    try {
+      await invoke("start_wireproxy", {
+        profileId: profile.id,
+        configPath: generatedConfigMeta.path,
+        binaryPath: wireproxyBinaryPath,
+        port: port,
+      });
+      onStatusChange("running");
+    } catch (err: any) {
+      console.error("Failed to start wireproxy:", err);
+      onStatusChange("error");
+      alert(err.toString() || "Failed to start WireProxy");
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const handleStopProxy = async () => {
+    setIsActionLoading(true);
+    try {
+      await invoke("stop_wireproxy", { profileId: profile.id });
+      onStatusChange("stopped");
+    } catch (err: any) {
+      console.error("Failed to stop wireproxy:", err);
+      alert(err.toString() || "Failed to stop WireProxy");
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const isProxyActive = profile.status === "running" || profile.status === "starting";
+
   const getStatusIcon = (status: ProfileStatus) => {
     switch (status) {
       case "running":
@@ -95,6 +233,26 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
         return <HelpCircle size={16} className="status-icon stopped" />;
     }
   };
+
+  // Status logic as per requirements:
+  // - No generated config loaded: "Not generated"
+  // - Current profile proxyType/port differs from generatedConfigMeta proxyType/port: "Needs regeneration"
+  // - Otherwise: "Ready"
+  let configStatus: "not_generated" | "needs_regeneration" | "ready" = "not_generated";
+  if (generatedConfigMeta) {
+    if (
+      port !== generatedConfigMeta.port || 
+      proxyType !== generatedConfigMeta.proxyType ||
+      profile.port !== generatedConfigMeta.port ||
+      profile.proxyType !== generatedConfigMeta.proxyType
+    ) {
+      configStatus = "needs_regeneration";
+    } else {
+      configStatus = "ready";
+    }
+  }
+
+  const isOutOfSync = configStatus !== "ready";
 
   return (
     <div className="profile-details-container">
@@ -134,14 +292,16 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                 <button 
                   type="button"
                   className={`selector-btn ${proxyType === "socks5" ? "active" : ""}`}
-                  onClick={() => handleProxyTypeChange("socks5")}
+                  onClick={() => !isProxyActive && handleProxyTypeChange("socks5")}
+                  disabled={isProxyActive}
                 >
                   SOCKS5
                 </button>
                 <button 
                   type="button"
                   className={`selector-btn ${proxyType === "http" ? "active" : ""}`}
-                  onClick={() => handleProxyTypeChange("http")}
+                  onClick={() => !isProxyActive && handleProxyTypeChange("http")}
+                  disabled={isProxyActive}
                 >
                   HTTP
                 </button>
@@ -153,12 +313,13 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
               <input 
                 id="proxy-port"
                 type="number"
-                min="1"
+                min="1024"
                 max="65535"
                 className="form-input"
                 value={port}
                 onChange={handlePortChange}
                 onBlur={handlePortBlur}
+                disabled={isProxyActive}
               />
             </div>
 
@@ -176,6 +337,94 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                 </button>
               </div>
             </div>
+
+            <div className="form-group span-2 mt-2">
+              <div className="proxy-action-buttons" style={{ display: "flex", gap: "12px" }}>
+                {profile.status === "running" ? (
+                  <button 
+                    type="button" 
+                    className="btn btn-danger btn-full"
+                    onClick={handleStopProxy}
+                    disabled={isActionLoading}
+                  >
+                    Stop Proxy
+                  </button>
+                ) : (
+                  <button 
+                    type="button" 
+                    className="btn btn-primary btn-full"
+                    onClick={handleStartProxy}
+                    disabled={profile.status === "starting" || isActionLoading}
+                  >
+                    {profile.status === "starting" ? "Starting..." : "Start Proxy"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* WireProxy Configuration File */}
+        <div className="details-section">
+          <h3 className="section-title">Proxy Configuration File</h3>
+          <div className="config-file-card">
+            <div className="config-file-info">
+              <div className="config-file-status-wrapper">
+                <FileCode size={20} className="config-icon" />
+                <div className="config-file-details">
+                  <span className="config-filename">profile-{profile.id.slice(0, 8)}.conf</span>
+                  <div className="config-status-row">
+                    <span className={`config-status-dot ${configStatus === "ready" ? "success" : (configStatus === "needs_regeneration" ? "warning" : "danger")}`} />
+                    <span className="config-status-text">
+                      {configStatus === "needs_regeneration" 
+                        ? "Needs regeneration (Settings changed)" 
+                        : (configStatus === "not_generated" ? "Not generated yet" : "Ready (Generated & synced)")}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="config-file-actions">
+                <button 
+                  type="button" 
+                  className={`btn btn-sm ${showGenConfig ? "btn-secondary" : "btn-primary"}`}
+                  onClick={() => setShowGenConfig(!showGenConfig)}
+                  disabled={!generatedConfigMeta}
+                >
+                  {showGenConfig ? "Hide Preview" : "View Preview"}
+                </button>
+                <button 
+                  type="button" 
+                  className="btn btn-sm btn-secondary"
+                  onClick={handleCopyGenConfig}
+                  disabled={!generatedConfigMeta}
+                >
+                  {copiedGenConfig ? "Copied!" : "Copy"}
+                </button>
+                <button 
+                  type="button" 
+                  className={`btn btn-sm ${isOutOfSync ? "btn-primary-glow animate-pulse" : "btn-secondary"}`}
+                  onClick={handleRegenerate}
+                  disabled={isRegenerating}
+                >
+                  {isRegenerating ? "Generating..." : (generatedConfigMeta ? "Regenerate" : "Generate Config")}
+                </button>
+              </div>
+            </div>
+
+            {showGenConfig && generatedConfigMeta && (
+              <div className="config-viewer-wrapper mt-3">
+                <div className="config-toolbar">
+                  <span className="file-info-tag">wireproxy.conf ({generatedConfigMeta.proxyType.toUpperCase()} on port {generatedConfigMeta.port})</span>
+                  <span className="file-info-tag" style={{ marginLeft: "auto", fontSize: "10px" }}>
+                    Last generated: {new Date(generatedConfigMeta.generatedAt).toLocaleTimeString()}
+                  </span>
+                </div>
+                <pre className="config-pre">
+                  <code>{maskPrivateKey(generatedConfigMeta.content, maskKey)}</code>
+                </pre>
+              </div>
+            )}
           </div>
         </div>
 

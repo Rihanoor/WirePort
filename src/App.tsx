@@ -4,7 +4,8 @@ import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { EmptyState } from "./components/EmptyState";
 import { ProfileDetails } from "./components/ProfileDetails";
-import { Profile } from "./types";
+import { SettingsModal } from "./components/SettingsModal";
+import { Profile, AppSettings, ProfileStatus } from "./types";
 import { CheckCircle2, AlertCircle } from "lucide-react";
 import "./App.css";
 
@@ -19,22 +20,33 @@ function App() {
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [loading, setLoading] = useState(true);
+  const [settings, setSettings] = useState<AppSettings>({ wireproxyBinaryPath: "" });
+  const [showSettings, setShowSettings] = useState(false);
 
-  // Load profiles from local storage on mount
+  // Load profiles and settings from local storage on mount
   useEffect(() => {
-    const fetchProfiles = async () => {
+    const fetchProfilesAndSettings = async () => {
       try {
         const res = await invoke<string>("load_profiles");
         const loaded: Profile[] = JSON.parse(res);
-        setProfiles(loaded);
+        // Force stopped status on launch for all profiles
+        const stoppedProfiles = loaded.map(p => ({ ...p, status: "stopped" as const }));
+        setProfiles(stoppedProfiles);
       } catch (err) {
         console.error("Failed to load profiles:", err);
         showToast("Failed to load profiles from storage", "error");
+      }
+
+      try {
+        const loadedSettings = await invoke<AppSettings>("load_settings");
+        setSettings(loadedSettings);
+      } catch (err) {
+        console.error("Failed to load settings:", err);
       } finally {
         setLoading(false);
       }
     };
-    fetchProfiles();
+    fetchProfilesAndSettings();
   }, []);
 
   const showToast = (message: string, type: "success" | "error" = "success") => {
@@ -95,8 +107,23 @@ function App() {
       };
 
       const updatedProfiles = [...profiles, newProfile];
-      await invoke("save_profiles", { profilesJson: JSON.stringify(updatedProfiles) });
+      // Force status to "stopped" when persisting to disk
+      const profilesToSave = updatedProfiles.map(p => ({ ...p, status: "stopped" as const }));
+      await invoke("save_profiles", { profilesJson: JSON.stringify(profilesToSave) });
       setProfiles(updatedProfiles);
+      
+      // Auto-generate the initial WireProxy config once on import
+      try {
+        await invoke("generate_wireproxy_config", {
+          profileId: newProfile.id,
+          proxyType: newProfile.proxyType,
+          port: newProfile.port,
+          configContent: newProfile.configContent,
+        });
+      } catch (genErr) {
+        console.error("Failed to generate initial config:", genErr);
+      }
+
       setSelectedProfileId(newProfile.id);
       showToast(`Imported profile "${profileName}"`, "success");
     } catch (err: any) {
@@ -106,9 +133,9 @@ function App() {
   };
 
   const handleUpdateProfile = async (updatedProfile: Profile) => {
-    // Validate port range
-    if (updatedProfile.port < 1 || updatedProfile.port > 65535) {
-      showToast("Port must be between 1 and 65535", "error");
+    // Validate port range (1024-65535)
+    if (updatedProfile.port < 1024 || updatedProfile.port > 65535) {
+      showToast("Port must be between 1024 and 65535", "error");
       return;
     }
 
@@ -132,7 +159,9 @@ function App() {
 
     const updatedProfiles = profiles.map((p) => p.id === updatedProfile.id ? updatedProfile : p);
     try {
-      await invoke("save_profiles", { profilesJson: JSON.stringify(updatedProfiles) });
+      // Force status to "stopped" when persisting to disk
+      const profilesToSave = updatedProfiles.map(p => ({ ...p, status: "stopped" as const }));
+      await invoke("save_profiles", { profilesJson: JSON.stringify(profilesToSave) });
       setProfiles(updatedProfiles);
       showToast("Profile saved successfully", "success");
     } catch (err: any) {
@@ -144,7 +173,9 @@ function App() {
   const handleDeleteProfile = async (id: string) => {
     const updatedProfiles = profiles.filter((p) => p.id !== id);
     try {
-      await invoke("save_profiles", { profilesJson: JSON.stringify(updatedProfiles) });
+      // Force status to "stopped" when persisting to disk
+      const profilesToSave = updatedProfiles.map(p => ({ ...p, status: "stopped" as const }));
+      await invoke("save_profiles", { profilesJson: JSON.stringify(profilesToSave) });
       setProfiles(updatedProfiles);
       if (selectedProfileId === id) {
         setSelectedProfileId(null);
@@ -157,10 +188,15 @@ function App() {
   };
 
   const handleOpenSettings = () => {
-    console.log("Settings clicked");
+    setShowSettings(true);
+  };
+
+  const handleStatusChange = (profileId: string, status: ProfileStatus) => {
+    setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, status } : p)));
   };
 
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId);
+  const runningProfile = profiles.find((p) => p.status === "running");
 
   return (
     <div className="app-container">
@@ -172,7 +208,7 @@ function App() {
         onSettingsClick={handleOpenSettings}
       />
       <main className="app-main">
-        <Header />
+        <Header activeProfile={runningProfile || null} />
         {loading ? (
           <div className="loading-container">
             <span className="loading-text">Loading Profiles...</span>
@@ -182,6 +218,8 @@ function App() {
             profile={selectedProfile}
             onUpdate={handleUpdateProfile}
             onDelete={handleDeleteProfile}
+            wireproxyBinaryPath={settings.wireproxyBinaryPath}
+            onStatusChange={(status) => handleStatusChange(selectedProfile.id, status)}
           />
         ) : (
           <EmptyState onImportClick={handleImportProfile} />
@@ -205,6 +243,14 @@ function App() {
           </div>
         ))}
       </div>
+
+      {showSettings && (
+        <SettingsModal
+          settings={settings}
+          onSave={setSettings}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
     </div>
   );
 }

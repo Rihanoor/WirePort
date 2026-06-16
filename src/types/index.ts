@@ -19,8 +19,13 @@ export interface Profile {
 }
 
 export interface AppSettings {
-  autoStart: boolean;
-  startOnBoot: boolean;
-  defaultPort: number;
-  defaultProxyType: ProxyType;
+  wireproxyBinaryPath: string;
+}
+
+export interface GeneratedConfigMeta {
+  content: string;
+  path: string;
+  generatedAt: string;
+  proxyType: ProxyType;
+  port: number;
 }

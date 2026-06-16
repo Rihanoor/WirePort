@@ -8,6 +8,14 @@
     "opener:default",
     "wireport:allow-pick-parse-and-validate-file",
     "wireport:allow-save-profiles",
-    "wireport:allow-load-profiles"
+    "wireport:allow-load-profiles",
+    "wireport:allow-generate-wireproxy-config",
+    "wireport:allow-load-generated-config",
+    "wireport:allow-load-settings",
+    "wireport:allow-save-settings",
+    "wireport:allow-pick-wireproxy-binary",
+    "wireport:allow-start-wireproxy",
+    "wireport:allow-stop-wireproxy",
+    "wireport:allow-get-profile-status"
   ]
 }
