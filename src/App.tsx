@@ -4,9 +4,8 @@ import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { EmptyState } from "./components/EmptyState";
 import { ProfileDetails } from "./components/ProfileDetails";
-import { SettingsModal } from "./components/SettingsModal";
 import { Dashboard } from "./components/Dashboard";
-import { Profile, AppSettings, ProfileStatus } from "./types";
+import { Profile, ProfileStatus } from "./types";
 import { CheckCircle2, AlertCircle } from "lucide-react";
 import "./App.css";
 
@@ -21,8 +20,6 @@ function App() {
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [loading, setLoading] = useState(true);
-  const [settings, setSettings] = useState<AppSettings>({ wireproxyBinaryPath: "" });
-  const [showSettings, setShowSettings] = useState(false);
 
   const selectProfile = (id: string | null) => {
     setSelectedProfileId(id);
@@ -38,9 +35,9 @@ function App() {
       .catch((err) => console.error("Failed to sync selected profile with backend:", err));
   }, [selectedProfileId]);
 
-  // Load profiles and settings from local storage on mount
+  // Load profiles from local storage on mount
   useEffect(() => {
-    const fetchProfilesAndSettings = async () => {
+    const fetchProfiles = async () => {
       try {
         const res = await invoke<string>("load_profiles");
         const loaded: Profile[] = JSON.parse(res);
@@ -58,18 +55,11 @@ function App() {
       } catch (err) {
         console.error("Failed to load profiles:", err);
         showToast("Failed to load profiles from storage", "error");
-      }
-
-      try {
-        const loadedSettings = await invoke<AppSettings>("load_settings");
-        setSettings(loadedSettings);
-      } catch (err) {
-        console.error("Failed to load settings:", err);
       } finally {
         setLoading(false);
       }
     };
-    fetchProfilesAndSettings();
+    fetchProfiles();
   }, []);
 
   const showToast = (message: string, type: "success" | "error" = "success") => {
@@ -210,10 +200,6 @@ function App() {
     }
   };
 
-  const handleOpenSettings = () => {
-    setShowSettings(true);
-  };
-
   const handleStatusChange = (profileId: string, status: ProfileStatus) => {
     setProfiles((prev) => prev.map((p) => (p.id === profileId ? { 
       ...p, 
@@ -225,6 +211,22 @@ function App() {
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId);
   const runningProfile = profiles.find((p) => p.status === "running");
 
+  const handleStopRunningProfile = async () => {
+    if (!runningProfile) return;
+    try {
+      await invoke("stop_wireproxy", { profileId: runningProfile.id });
+      setProfiles((prev) =>
+        prev.map((p) =>
+          p.id === runningProfile.id ? { ...p, status: "stopped" as const } : p
+        )
+      );
+      showToast("Proxy stopped successfully", "success");
+    } catch (err: any) {
+      console.error("Failed to stop proxy:", err);
+      showToast(err.toString() || "Failed to stop WireProxy", "error");
+    }
+  };
+
   return (
     <div className="app-container">
       <Sidebar
@@ -232,10 +234,11 @@ function App() {
         selectedProfileId={selectedProfileId}
         onProfileSelect={selectProfile}
         onImportClick={handleImportProfile}
-        onSettingsClick={handleOpenSettings}
       />
       <main className="app-main">
-        <Header activeProfile={runningProfile || null} />
+        {!selectedProfileId && (
+          <Header activeProfile={runningProfile || null} onStopClick={handleStopRunningProfile} />
+        )}
         {loading ? (
           <div className="loading-container">
             <span className="loading-text">Loading Profiles...</span>
@@ -247,7 +250,6 @@ function App() {
             profile={selectedProfile}
             onUpdate={handleUpdateProfile}
             onDelete={handleDeleteProfile}
-            wireproxyBinaryPath={settings.wireproxyBinaryPath}
             onStatusChange={(status) => handleStatusChange(selectedProfile.id, status)}
             showToast={showToast}
           />
@@ -256,7 +258,6 @@ function App() {
             profiles={profiles}
             onProfileSelect={selectProfile}
             onImportClick={handleImportProfile}
-            onSettingsClick={handleOpenSettings}
           />
         )}
       </main>
@@ -278,14 +279,6 @@ function App() {
           </div>
         ))}
       </div>
-
-      {showSettings && (
-        <SettingsModal
-          settings={settings}
-          onSave={setSettings}
-          onClose={() => setShowSettings(false)}
-        />
-      )}
     </div>
   );
 }

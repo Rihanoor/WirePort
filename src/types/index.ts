@@ -19,10 +19,6 @@ export interface Profile {
   lastConnectedAt?: string;
 }
 
-export interface AppSettings {
-  wireproxyBinaryPath: string;
-}
-
 export interface GeneratedConfigMeta {
   content: string;
   path: string;

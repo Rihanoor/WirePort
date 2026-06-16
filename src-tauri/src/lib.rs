@@ -331,36 +331,6 @@ fn load_settings(app_handle: tauri::AppHandle) -> Result<AppSettings, String> {
         .map_err(|e| format!("Failed to parse settings: {}", e))
 }
 
-#[tauri::command]
-fn save_settings(app_handle: tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
-    let app_dir = app_handle.path().app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    
-    std::fs::create_dir_all(&app_dir)
-        .map_err(|e| format!("Failed to create directory: {}", e))?;
-    
-    let file_path = app_dir.join("settings.json");
-    let content = serde_json::to_string(&settings)
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-        
-    std::fs::write(&file_path, content)
-        .map_err(|e| format!("Failed to write settings: {}", e))?;
-        
-    Ok(())
-}
-
-#[tauri::command]
-fn pick_wireproxy_binary() -> Result<Option<String>, String> {
-    let file = rfd::FileDialog::new()
-        .set_title("Select WireProxy Binary")
-        .pick_file();
-
-    match file {
-        Some(path) => Ok(Some(path.to_string_lossy().to_string())),
-        None => Ok(None),
-    }
-}
-
 use std::collections::{HashMap, VecDeque};
 
 use std::sync::Mutex;
@@ -388,7 +358,6 @@ pub struct WorkerStartupCount {
 
 struct RunningProcess {
     child: std::process::Child,
-    proxy_port: u16,
     info_port: u16,
     started_at: std::time::Instant,
 }
@@ -575,7 +544,15 @@ fn handle_unexpected_exit(app_handle: &tauri::AppHandle, profile_id: &str) {
             Err(_) => "unknown".to_string(),
         };
         append_log(&state, profile_id, "ERROR", &format!("WireProxy exited unexpectedly (exit code: {})", exit_code_str));
-        let _ = update_tray_menu(app_handle, "🔴 Error");
+        let _ = update_tray_menu(app_handle, "Error");
+
+        let profile_name = get_profile_info(app_handle, profile_id)
+            .map(|info| info.name)
+            .unwrap_or_else(|| "Profile".to_string());
+        let _ = app_handle.notification().builder()
+            .title("WirePort Connection Lost")
+            .body(format!("{} stopped unexpectedly.", profile_name))
+            .show();
     }
 }
 
@@ -784,7 +761,6 @@ fn start_wireproxy(
             // Still running! Success.
             append_log(&state, &profile_id, "INFO", "WireProxy process started");
             let _ = update_last_connected_at(&app_handle, &profile_id);
-            let _ = update_tray_menu(&app_handle, "🟢 Connected");
 
             let mut child_to_insert = child;
             let stdout = child_to_insert.stdout.take();
@@ -792,11 +768,20 @@ fn start_wireproxy(
 
             map.insert(profile_id.clone(), RunningProcess {
                 child: child_to_insert,
-                proxy_port: port,
                 info_port,
                 started_at: std::time::Instant::now(),
             });
-            drop(map);
+            drop(map); // Release lock before updating tray menu
+
+            let _ = update_tray_menu(&app_handle, "Connected");
+
+            let profile_name = get_profile_info(&app_handle, &profile_id)
+                .map(|info| info.name)
+                .unwrap_or_else(|| "Profile".to_string());
+            let _ = app_handle.notification().builder()
+                .title("WirePort Connected")
+                .body(format!("{} is now running on 127.0.0.1:{}", profile_name, port))
+                .show();
 
             if let Some(stdout_pipe) = stdout {
                 let app_handle_clone = app_handle.clone();
@@ -832,6 +817,7 @@ fn start_wireproxy(
             Ok(())
         }
         Ok(Some(status)) => {
+            drop(map); // Release lock immediately
             // Exited immediately. Capture stdout and stderr.
             let mut stdout_content = String::new();
             if let Some(mut stdout) = child.stdout.take() {
@@ -861,7 +847,7 @@ fn start_wireproxy(
             append_log(&state, &profile_id, "ERROR", &format!("WireProxy exited unexpectedly (exit code: {})", exit_code_str));
 
             let stderr_msg = stderr_content.trim();
-            let _ = update_tray_menu(&app_handle, "🔴 Error");
+            let _ = update_tray_menu(&app_handle, "Error");
             if stderr_msg.is_empty() {
                 Err(format!("WireProxy exited immediately with status: {}", status))
             } else {
@@ -869,11 +855,12 @@ fn start_wireproxy(
             }
         }
         Err(e) => {
+            drop(map); // Release lock immediately
             let err_msg = format!("Failed to check WireProxy status after spawn: {}", e);
             append_log(&state, &profile_id, "ERROR", &err_msg);
             append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
             append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
-            let _ = update_tray_menu(&app_handle, "🔴 Error");
+            let _ = update_tray_menu(&app_handle, "Error");
             Err(err_msg)
         }
     }
@@ -899,7 +886,15 @@ fn stop_wireproxy(
         let _ = proc.child.kill();
         let _ = proc.child.wait();
         append_log(&state, &profile_id, "INFO", "WireProxy process stopped");
-        let _ = update_tray_menu(&app_handle, "🔴 Disconnected");
+        let _ = update_tray_menu(&app_handle, "Disconnected");
+
+        let profile_name = get_profile_info(&app_handle, &profile_id)
+            .map(|info| info.name)
+            .unwrap_or_else(|| "Profile".to_string());
+        let _ = app_handle.notification().builder()
+            .title("WirePort Disconnected")
+            .body(format!("{} has been stopped.", profile_name))
+            .show();
     }
     Ok(())
 }
@@ -1261,9 +1256,9 @@ async fn test_proxy_connection(
                                 let tunnel_active = !exit_ip.is_empty() && !local_ip.is_empty() && exit_ip != local_ip;
 
                                  if tunnel_active {
-                                     let _ = update_tray_menu(&app_handle, "🟢 Connected");
+                                     let _ = update_tray_menu(&app_handle, "Connected");
                                  } else {
-                                    let _ = update_tray_menu(&app_handle, "🔴 Error");
+                                    let _ = update_tray_menu(&app_handle, "Error");
                                 }
 
                                 return Ok(ConnectionHealthResult {
@@ -1291,7 +1286,7 @@ async fn test_proxy_connection(
     }
 
     // If all providers failed
-    let _ = update_tray_menu(&app_handle, "🔴 Error");
+    let _ = update_tray_menu(&app_handle, "Error");
     Ok(ConnectionHealthResult {
         success: false,
         tunnel_active: false,
@@ -1306,29 +1301,117 @@ async fn test_proxy_connection(
     })
 }
 
-fn update_tray_menu(app: &tauri::AppHandle, state_label: &str) -> Result<(), String> {
+struct ProfileInfo {
+    name: String,
+    proxy_type: String,
+    port: u16,
+}
+
+fn get_profile_info(app: &tauri::AppHandle, profile_id: &str) -> Option<ProfileInfo> {
+    let app_dir = app.path().app_data_dir().ok()?;
+    let file_path = app_dir.join("profiles.json");
+    if !file_path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&file_path).ok()?;
+    let profiles: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let arr = profiles.as_array()?;
+    let profile_obj = arr.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(profile_id))?;
+    
+    let name = profile_obj.get("name").and_then(|v| v.as_str()).unwrap_or("Unnamed").to_string();
+    let proxy_type = profile_obj.get("proxyType").and_then(|v| v.as_str()).unwrap_or("socks5").to_string();
+    let port = profile_obj.get("port").and_then(|v| v.as_u64()).unwrap_or(1080) as u16;
+    
+    Some(ProfileInfo { name, proxy_type, port })
+}
+
+fn update_tray_menu(app: &tauri::AppHandle, status: &str) -> Result<(), String> {
     if let Some(tray) = app.tray_by_id("main") {
-        let is_connected = state_label.contains("Connected");
-        let state_i = tauri::menu::MenuItemBuilder::with_id("status", state_label)
+        let state = app.state::<ProcessManager>();
+        
+        let is_connected = status.contains("Connected");
+        let status_label = if status.contains("Connected") {
+            "● Connected"
+        } else if status.contains("Error") {
+            "● Error"
+        } else {
+            "● Disconnected"
+        };
+        
+        let active_id = {
+            let map = state.processes.lock().unwrap();
+            map.keys().next().cloned()
+        };
+        
+        let selected_id = {
+            let guard = state.selected_profile_id.lock().unwrap();
+            guard.clone()
+        };
+        
+        let display_id = active_id.or(selected_id);
+        
+        let (profile_name, proxy_url) = if let Some(ref pid) = display_id {
+            if let Some(info) = get_profile_info(app, pid) {
+                (
+                    info.name,
+                    format!("{}://127.0.0.1:{}", info.proxy_type, info.port)
+                )
+            } else {
+                ("None".to_string(), "None".to_string())
+            }
+        } else {
+            ("None".to_string(), "None".to_string())
+        };
+        
+        let title_i = tauri::menu::MenuItemBuilder::with_id("title", "WirePort")
+            .enabled(false)
+            .build(app)
+            .map_err(|e| e.to_string())?;
+            
+        let status_i = tauri::menu::MenuItemBuilder::with_id("status", status_label)
+            .enabled(false)
+            .build(app)
+            .map_err(|e| e.to_string())?;
+            
+        let profile_i = tauri::menu::MenuItemBuilder::with_id("profile", format!("Current Profile: {}", profile_name))
+            .enabled(false)
+            .build(app)
+            .map_err(|e| e.to_string())?;
+            
+        let proxy_i = tauri::menu::MenuItemBuilder::with_id("proxy", format!("Proxy: {}", proxy_url))
+            .enabled(false)
+            .build(app)
+            .map_err(|e| e.to_string())?;
+            
+        let connect_i = tauri::menu::MenuItemBuilder::with_id("connect", "Connect")
+            .enabled(!is_connected)
+            .build(app)
+            .map_err(|e| e.to_string())?;
+            
+        let disconnect_i = tauri::menu::MenuItemBuilder::with_id("disconnect", "Disconnect")
             .enabled(is_connected)
             .build(app)
             .map_err(|e| e.to_string())?;
-        let open_i = tauri::menu::MenuItemBuilder::with_id("open", "Open WirePort")
+            
+        let open_i = tauri::menu::MenuItemBuilder::with_id("open", "Open Dashboard")
             .build(app)
             .map_err(|e| e.to_string())?;
-        let connect_i = tauri::menu::MenuItemBuilder::with_id("connect", "Connect Current Profile")
-            .build(app)
-            .map_err(|e| e.to_string())?;
-        let disconnect_i = tauri::menu::MenuItemBuilder::with_id("disconnect", "Disconnect Current Profile")
-            .build(app)
-            .map_err(|e| e.to_string())?;
+            
         let quit_i = tauri::menu::MenuItemBuilder::with_id("quit", "Quit")
             .build(app)
             .map_err(|e| e.to_string())?;
 
-        let menu = tauri::menu::Menu::with_items(app, &[&state_i, &open_i, &connect_i, &disconnect_i, &quit_i])
-            .map_err(|e| e.to_string())?;
-
+        let menu = tauri::menu::Menu::with_items(app, &[
+            &title_i,
+            &status_i,
+            &profile_i,
+            &proxy_i,
+            &connect_i,
+            &disconnect_i,
+            &open_i,
+            &quit_i,
+        ]).map_err(|e| e.to_string())?;
+        
         tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -1385,9 +1468,16 @@ fn stop_running_profile(app_handle: &tauri::AppHandle) -> Result<(), String> {
         let map = state.processes.lock().unwrap();
         map.keys().next().cloned()
     };
-    if let Some(profile_id) = running_id {
-        stop_wireproxy(app_handle.clone(), profile_id, state)?;
-        let _ = update_tray_menu(app_handle, "🔴 Disconnected");
+    match running_id {
+        Some(profile_id) => {
+            stop_wireproxy(app_handle.clone(), profile_id, state)?;
+        }
+        None => {
+            let _ = app_handle.notification().builder()
+                .title("WirePort")
+                .body("No active profile.")
+                .show();
+        }
     }
     Ok(())
 }
@@ -1403,12 +1493,24 @@ fn connect_current_profile(app_handle: &tauri::AppHandle) -> Result<(), String> 
         Some(id) => id,
         None => {
             let _ = app_handle.notification().builder()
-                .title("WirePort")
-                .body("No profile selected")
+                .title("No profile selected")
+                .body("Open WirePort and select a profile first.")
                 .show();
             return Ok(());
         }
     };
+
+    let is_running = {
+        let map = state.processes.lock().unwrap();
+        !map.is_empty()
+    };
+    if is_running {
+        let _ = app_handle.notification().builder()
+            .title("WirePort")
+            .body("A profile is already running.")
+            .show();
+        return Ok(());
+    }
 
     // Load profiles.json
     let app_dir = app_handle.path().app_data_dir()
@@ -1451,24 +1553,26 @@ fn connect_current_profile(app_handle: &tauri::AppHandle) -> Result<(), String> 
 
 #[tauri::command]
 fn set_selected_profile(
+    app_handle: tauri::AppHandle,
     profile_id: Option<String>,
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<(), String> {
-    let mut selected = state.selected_profile_id.lock().unwrap();
-    *selected = profile_id;
-    Ok(())
-}
+    {
+        let mut selected = state.selected_profile_id.lock().unwrap();
+        *selected = profile_id;
+    }
 
-#[tauri::command]
-fn show_notification(
-    app_handle: tauri::AppHandle,
-    title: String,
-    body: String,
-) -> Result<(), String> {
-    let _ = app_handle.notification().builder()
-        .title(title)
-        .body(body)
-        .show();
+    // Update tray menu status
+    let status = {
+        let map = state.processes.lock().unwrap();
+        if map.is_empty() {
+            "Disconnected"
+        } else {
+            "Connected"
+        }
+    };
+    let _ = update_tray_menu(&app_handle, status);
+
     Ok(())
 }
 
@@ -1492,8 +1596,6 @@ pub fn run() {
             generate_wireproxy_config,
             load_generated_config,
             load_settings,
-            save_settings,
-            pick_wireproxy_binary,
             start_wireproxy,
             stop_wireproxy,
             get_profile_status,
@@ -1502,25 +1604,13 @@ pub fn run() {
             get_profile_logs,
             clear_profile_logs,
             get_proxy_stats,
-            set_selected_profile,
-            show_notification
+            set_selected_profile
         ])
         .setup(|app| {
-            let state_i = tauri::menu::MenuItemBuilder::with_id("status", "🔴 Disconnected")
-                .enabled(false)
-                .build(app)?;
-            let open_i = tauri::menu::MenuItemBuilder::with_id("open", "Open WirePort").build(app)?;
-            let connect_i = tauri::menu::MenuItemBuilder::with_id("connect", "Connect Current Profile").build(app)?;
-            let disconnect_i = tauri::menu::MenuItemBuilder::with_id("disconnect", "Disconnect Current Profile").build(app)?;
-            let quit_i = tauri::menu::MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-
-            let menu = tauri::menu::Menu::with_items(app, &[&state_i, &open_i, &connect_i, &disconnect_i, &quit_i])?;
-
             let icon_bytes = include_bytes!("../icons/32x32.png");
             let icon = tauri::image::Image::from_bytes(icon_bytes)?;
 
             let _tray = tauri::tray::TrayIconBuilder::with_id("main")
-                .menu(&menu)
                 .icon(icon)
                 .on_menu_event(|app, event| {
                     match event.id().as_ref() {
@@ -1543,6 +1633,9 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            let handle = app.handle();
+            let _ = update_tray_menu(handle, "Disconnected");
 
             // Restore window state from window-state.json
             if let Some(window) = app.get_webview_window("main") {

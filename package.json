@@ -2,6 +2,13 @@
   "name": "wireport",
   "private": true,
   "version": "0.1.0",
+  "description": "Lightweight desktop client that converts WireGuard profiles into local SOCKS5 or HTTP proxies",
+  "author": "Rihanoor <rihanoor@lightib.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rihanoor/WirePort.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,6 +18,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-opener": "^2",
     "lucide-react": "^1.18.0",
     "react": "^19.1.0",

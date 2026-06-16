@@ -2,11 +2,12 @@ import React, { useState, useEffect } from "react";
 import { 
   Shield, Globe, Calendar, Copy, Check, Eye, EyeOff, 
   FileText, ArrowUpRight, CheckCircle2, XCircle, AlertCircle, HelpCircle, FileCode,
-  Activity, RefreshCw, Clock, Download, Trash2, Terminal, ChevronRight,
+  Activity, RefreshCw, Clock, Download, Trash2, Terminal, Square,
   ArrowDown, ArrowUp
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Profile, ProxyType, ProfileStatus, GeneratedConfigMeta, ConnectionHealthResult, LogEntry, ProxyStats } from "../types";
 
 
@@ -14,7 +15,6 @@ interface ProfileDetailsProps {
   profile: Profile;
   onUpdate: (updatedProfile: Profile) => void;
   onDelete?: (id: string) => void;
-  wireproxyBinaryPath: string;
   onStatusChange: (status: ProfileStatus) => void;
   showToast: (message: string, type?: "success" | "error") => void;
 }
@@ -23,11 +23,11 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   profile, 
   onUpdate,
   onDelete,
-  wireproxyBinaryPath,
   onStatusChange,
   showToast
 }) => {
   const [name, setName] = useState(profile.name);
+  const [activeTab, setActiveTab] = useState<"overview" | "speed" | "config" | "logs">("overview");
   const [proxyType, setProxyType] = useState<ProxyType>(profile.proxyType);
   const [port, setPort] = useState(profile.port);
   const [isActionLoading, setIsActionLoading] = useState(false);
@@ -65,20 +65,9 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   });
   const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
   const [copiedLogs, setCopiedLogs] = useState(false);
-  const [isLogsExpanded, setIsLogsExpanded] = useState(false);
   const [logFilter, setLogFilter] = useState<"all" | "info" | "debug" | "warn" | "error">("all");
   const logEndRef = React.useRef<HTMLDivElement>(null);
   const logContainerRef = React.useRef<HTMLDivElement>(null);
-
-  // Auto expand when logs are first received, auto collapse when cleared
-  const prevLogsEmptyRef = React.useRef(true);
-  useEffect(() => {
-    const isEmpty = logs.length === 0;
-    if (isEmpty !== prevLogsEmptyRef.current) {
-      setIsLogsExpanded(!isEmpty);
-      prevLogsEmptyRef.current = isEmpty;
-    }
-  }, [logs.length === 0]);
 
   const fetchLogs = async () => {
     try {
@@ -274,6 +263,48 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     };
   }, [profile.status, profile.id, autoCheck]);
 
+  const wasTunnelActiveRef = React.useRef(false);
+  const hasNotifiedHealthFailureRef = React.useRef(false);
+
+  // Reset flags when status is not running
+  useEffect(() => {
+    if (profile.status !== "running") {
+      wasTunnelActiveRef.current = false;
+      hasNotifiedHealthFailureRef.current = false;
+    }
+  }, [profile.status]);
+
+  // Handle health failure notifications
+  useEffect(() => {
+    if (profile.status === "running" && health) {
+      if (health.success && health.tunnelActive) {
+        wasTunnelActiveRef.current = true;
+        hasNotifiedHealthFailureRef.current = false;
+      } else if (!health.tunnelActive && wasTunnelActiveRef.current) {
+        if (!hasNotifiedHealthFailureRef.current) {
+          hasNotifiedHealthFailureRef.current = true;
+          (async () => {
+            try {
+              let permissionGranted = await isPermissionGranted();
+              if (!permissionGranted) {
+                const permission = await requestPermission();
+                permissionGranted = permission === "granted";
+              }
+              if (permissionGranted) {
+                sendNotification({
+                  title: "WirePort Health Check Failed",
+                  body: `Tunnel verification failed for ${profile.name}.`,
+                });
+              }
+            } catch (err) {
+              console.error("Failed to show health failure notification:", err);
+            }
+          })();
+        }
+      }
+    }
+  }, [health, profile.status, profile.name]);
+
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setName(e.target.value);
@@ -385,7 +416,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
       await invoke("start_wireproxy", {
         profileId: profile.id,
         configPath: generatedConfigMeta.path,
-        binaryPath: wireproxyBinaryPath,
+        binaryPath: "",
         port: port,
       });
       onStatusChange("running");
@@ -584,486 +615,569 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
           </div>
         </div>
 
-        <div className={`status-badge ${profile.status}`}>
-          {getStatusIcon(profile.status)}
-          <span>{profile.status.toUpperCase()}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          {profile.status === "running" && (
+            <button 
+              type="button"
+              className="btn btn-danger btn-sm"
+              onClick={handleStopProxy}
+              disabled={isActionLoading}
+              style={{ 
+                padding: "6px 12px", 
+                fontSize: "12px", 
+                fontWeight: 600, 
+                borderRadius: "8px", 
+                display: "flex", 
+                alignItems: "center", 
+                gap: "6px",
+                cursor: "pointer"
+              }}
+              title="Stop Proxy"
+            >
+              <Square size={12} fill="currentColor" />
+              <span>Stop</span>
+            </button>
+          )}
+          <div className={`status-badge ${profile.status}`}>
+            {getStatusIcon(profile.status)}
+            <span>{profile.status.toUpperCase()}</span>
+          </div>
         </div>
       </div>
 
       <div className="details-body">
-        {/* Connection Health Card */}
-        {profile.status === "running" && (
-          <div className="details-section">
-            <h3 className="section-title">Connection Health</h3>
-            <div className="health-card">
-              <div className="health-card-header">
-                <div className="health-status-wrapper">
-                  <Activity size={18} className={`health-icon ${isCheckingHealth ? "animate-pulse" : ""}`} />
-                  <span className="health-card-title">Connection Stats</span>
-                </div>
-                <div className="health-actions">
-                  <label className="auto-check-toggle" htmlFor="auto-check-cb">
-                    <input 
-                      id="auto-check-cb"
-                      type="checkbox"
-                      checked={autoCheck}
-                      onChange={(e) => setAutoCheck(e.target.checked)}
-                    />
-                    <span>Auto-check (30s)</span>
-                  </label>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-secondary btn-health-test"
-                    onClick={() => checkConnection(true)}
-                    disabled={isCheckingHealth}
-                  >
-                    {isCheckingHealth ? (
-                      <>
-                        <RefreshCw size={12} className="animate-spin" />
-                        <span>Testing...</span>
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw size={12} />
-                        <span>Test Connection</span>
-                      </>
-                    )}
-                  </button>
+        {/* Sleek Tab Navigation */}
+        <div className="tabs-container">
+          <button 
+            type="button"
+            className={`tab-btn ${activeTab === "overview" ? "active" : ""}`}
+            onClick={() => setActiveTab("overview")}
+          >
+            <Shield size={14} />
+            <span>Overview</span>
+          </button>
+          <button 
+            type="button"
+            className={`tab-btn ${activeTab === "speed" ? "active" : ""}`}
+            onClick={() => setActiveTab("speed")}
+          >
+            <Activity size={14} />
+            <span>Speed</span>
+          </button>
+          <button 
+            type="button"
+            className={`tab-btn ${activeTab === "config" ? "active" : ""}`}
+            onClick={() => setActiveTab("config")}
+          >
+            <FileCode size={14} />
+            <span>Config</span>
+          </button>
+          <button 
+            type="button"
+            className={`tab-btn ${activeTab === "logs" ? "active" : ""}`}
+            onClick={() => setActiveTab("logs")}
+          >
+            <Terminal size={14} />
+            <span>Logs</span>
+          </button>
+        </div>
+
+        {/* Tab Contents */}
+        {activeTab === "overview" && (
+          <>
+            {/* Connection Health Card */}
+            {profile.status === "running" && (
+              <div className="details-section">
+                <h3 className="section-title">Connection Health</h3>
+                <div className="health-card">
+                  <div className="health-card-header">
+                    <div className="health-status-wrapper">
+                      <Activity size={18} className={`health-icon ${isCheckingHealth ? "animate-pulse" : ""}`} />
+                      <span className="health-card-title">Connection Stats</span>
+                    </div>
+                    <div className="health-actions">
+                      <label className="auto-check-toggle" htmlFor="auto-check-cb">
+                        <input 
+                          id="auto-check-cb"
+                          type="checkbox"
+                          checked={autoCheck}
+                          onChange={(e) => setAutoCheck(e.target.checked)}
+                        />
+                        <span>Auto-check (30s)</span>
+                      </label>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary btn-health-test"
+                        onClick={() => checkConnection(true)}
+                        disabled={isCheckingHealth}
+                      >
+                        {isCheckingHealth ? (
+                          <>
+                            <RefreshCw size={12} className="animate-spin" />
+                            <span>Testing...</span>
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw size={12} />
+                            <span>Test Connection</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="health-grid">
+                    <div className="health-metric">
+                      <span className="metric-label">Tunnel Active</span>
+                      <div className="metric-value">
+                        {isCheckingHealth && !health ? (
+                          <span className="status-indicator-text checking">Checking...</span>
+                        ) : health?.success && health.tunnelActive ? (
+                          <span className="status-indicator-text active">
+                            <span className="health-dot active" /> Yes
+                          </span>
+                        ) : (
+                          <span className="status-indicator-text inactive">
+                            <span className="health-dot inactive" /> No
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="health-metric">
+                      <span className="metric-label">Latency</span>
+                      <div className="metric-value font-mono">
+                        {health?.success ? (
+                          `${health.latencyMs} ms`
+                        ) : lastSuccessHealth ? (
+                          <span className="fallback-value" title="Last successful latency">
+                            {lastSuccessHealth.latencyMs} ms <span className="fallback-tag">(Last Ok)</span>
+                          </span>
+                        ) : isCheckingHealth ? (
+                          "Checking..."
+                        ) : (
+                          "--"
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="health-metric">
+                      <span className="metric-label">Exit IP</span>
+                      <div className="metric-value font-mono">
+                        {health?.success ? (
+                          health.exitIp
+                        ) : lastSuccessHealth ? (
+                          <span className="fallback-value" title="Last successful exit IP">
+                            {lastSuccessHealth.exitIp} <span className="fallback-tag">(Last Ok)</span>
+                          </span>
+                        ) : isCheckingHealth ? (
+                          "Checking..."
+                        ) : (
+                          "N/A"
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="health-metric">
+                      <span className="metric-label">Local IP</span>
+                      <div className="metric-value font-mono">
+                        {health?.localIp ? (
+                          health.localIp
+                        ) : isCheckingHealth ? (
+                          "Checking..."
+                        ) : (
+                          "Unknown"
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="health-metric">
+                      <span className="metric-label">Last Checked</span>
+                      <div className="metric-value font-mono">
+                        {lastCheckedTime ? (
+                          <span className="timestamp-value">
+                            <Clock size={12} style={{ marginRight: '4px', display: 'inline', verticalAlign: 'middle' }} /> {lastCheckedTime}
+                          </span>
+                        ) : (
+                          "Never"
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="health-metric">
+                      <span className="metric-label">Connected Since</span>
+                      <div className="metric-value font-mono">
+                        {getConnectedSinceText()}
+                      </div>
+                    </div>
+
+                    <div className="health-metric">
+                      <span className="metric-label">Connected For</span>
+                      <div className="metric-value font-mono">
+                        {getConnectedForText()}
+                      </div>
+                    </div>
+
+                    <div className="health-metric span-2">
+                      <span className="metric-label">Last Error</span>
+                      <div className={`metric-value error-message-box ${health && !health.success ? "has-error" : ""}`}>
+                        {health ? (
+                          health.success ? "None" : health.error
+                        ) : isCheckingHealth ? (
+                          "Checking connection..."
+                        ) : (
+                          "None"
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
+            )}
 
-              <div className="health-grid">
-                <div className="health-metric">
-                  <span className="metric-label">Tunnel Active</span>
-                  <div className="metric-value">
-                    {isCheckingHealth && !health ? (
-                      <span className="status-indicator-text checking">Checking...</span>
-                    ) : health?.success && health.tunnelActive ? (
-                      <span className="status-indicator-text active">
-                        <span className="health-dot active" /> Yes
-                      </span>
+            {/* Connection Setup */}
+            <div className="details-section">
+              <h3 className="section-title">Local Proxy Settings</h3>
+              <div className="settings-grid">
+                <div className="form-group">
+                  <label htmlFor="proxy-type" className="form-label">Proxy Type</label>
+                  <div className="proxy-type-selector">
+                    <button 
+                      type="button"
+                      className={`selector-btn ${proxyType === "socks5" ? "active" : ""}`}
+                      onClick={() => !isProxyActive && handleProxyTypeChange("socks5")}
+                      disabled={isProxyActive}
+                    >
+                      SOCKS5
+                    </button>
+                    <button 
+                      type="button"
+                      className={`selector-btn ${proxyType === "http" ? "active" : ""}`}
+                      onClick={() => !isProxyActive && handleProxyTypeChange("http")}
+                      disabled={isProxyActive}
+                    >
+                      HTTP
+                    </button>
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="proxy-port" className="form-label">Local Port</label>
+                  <input 
+                    id="proxy-port"
+                    type="number"
+                    min="1024"
+                    max="65535"
+                    className="form-input"
+                    value={port}
+                    onChange={handlePortChange}
+                    onBlur={handlePortBlur}
+                    disabled={isProxyActive}
+                  />
+                </div>
+
+                <div className="form-group span-2">
+                  <label className="form-label">Local Proxy Endpoint</label>
+                  <div className="endpoint-copy-box">
+                    <span className="endpoint-text">{proxyType}://127.0.0.1:{port}</span>
+                    <button 
+                      className="btn-icon copy-endpoint-btn"
+                      onClick={handleCopyEndpoint}
+                      title="Copy Endpoint"
+                      aria-label="Copy Endpoint"
+                    >
+                      {copied ? <Check size={16} className="text-success" /> : <Copy size={16} />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="form-group span-2 mt-1">
+                  <div className="quick-actions-row">
+                    <button
+                      type="button"
+                      className="quick-action-btn"
+                      onClick={handleCopyEndpoint}
+                      title="Copy Proxy URL"
+                    >
+                      <Copy size={14} />
+                      <span>Copy Proxy URL</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="quick-action-btn"
+                      onClick={handleTestIpLeak}
+                      title="Test connection on IPLeak.net"
+                    >
+                      <ArrowUpRight size={14} />
+                      <span>Test on IPLeak.net</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="form-group span-2 mt-2">
+                  <div className="proxy-action-buttons" style={{ display: "flex", gap: "12px" }}>
+                    {profile.status === "running" ? (
+                      <button 
+                        type="button" 
+                        className="btn btn-danger btn-full"
+                        onClick={handleStopProxy}
+                        disabled={isActionLoading}
+                      >
+                        Stop Proxy
+                      </button>
                     ) : (
-                      <span className="status-indicator-text inactive">
-                        <span className="health-dot inactive" /> No
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="health-metric">
-                  <span className="metric-label">Latency</span>
-                  <div className="metric-value font-mono">
-                    {health?.success ? (
-                      `${health.latencyMs} ms`
-                    ) : lastSuccessHealth ? (
-                      <span className="fallback-value" title="Last successful latency">
-                        {lastSuccessHealth.latencyMs} ms <span className="fallback-tag">(Last Ok)</span>
-                      </span>
-                    ) : isCheckingHealth ? (
-                      "Checking..."
-                    ) : (
-                      "--"
-                    )}
-                  </div>
-                </div>
-
-                <div className="health-metric">
-                  <span className="metric-label">Exit IP</span>
-                  <div className="metric-value font-mono">
-                    {health?.success ? (
-                      health.exitIp
-                    ) : lastSuccessHealth ? (
-                      <span className="fallback-value" title="Last successful exit IP">
-                        {lastSuccessHealth.exitIp} <span className="fallback-tag">(Last Ok)</span>
-                      </span>
-                    ) : isCheckingHealth ? (
-                      "Checking..."
-                    ) : (
-                      "N/A"
-                    )}
-                  </div>
-                </div>
-
-                <div className="health-metric">
-                  <span className="metric-label">Local IP</span>
-                  <div className="metric-value font-mono">
-                    {health?.localIp ? (
-                      health.localIp
-                    ) : isCheckingHealth ? (
-                      "Checking..."
-                    ) : (
-                      "Unknown"
-                    )}
-                  </div>
-                </div>
-
-                <div className="health-metric">
-                  <span className="metric-label">Last Checked</span>
-                  <div className="metric-value font-mono">
-                    {lastCheckedTime ? (
-                      <span className="timestamp-value">
-                        <Clock size={12} style={{ marginRight: '4px', display: 'inline', verticalAlign: 'middle' }} /> {lastCheckedTime}
-                      </span>
-                    ) : (
-                      "Never"
-                    )}
-                  </div>
-                </div>
-
-                <div className="health-metric">
-                  <span className="metric-label">Connected Since</span>
-                  <div className="metric-value font-mono">
-                    {getConnectedSinceText()}
-                  </div>
-                </div>
-
-                <div className="health-metric">
-                  <span className="metric-label">Connected For</span>
-                  <div className="metric-value font-mono">
-                    {getConnectedForText()}
-                  </div>
-                </div>
-
-                <div className="health-metric span-2">
-                  <span className="metric-label">Last Error</span>
-                  <div className={`metric-value error-message-box ${health && !health.success ? "has-error" : ""}`}>
-                    {health ? (
-                      health.success ? "None" : health.error
-                    ) : isCheckingHealth ? (
-                      "Checking connection..."
-                    ) : (
-                      "None"
+                      <button 
+                        type="button" 
+                        className="btn btn-primary btn-full"
+                        onClick={handleStartProxy}
+                        disabled={profile.status === "starting" || isActionLoading}
+                      >
+                        {profile.status === "starting" ? "Starting..." : "Start Proxy"}
+                      </button>
                     )}
                   </div>
                 </div>
               </div>
             </div>
-          </div>
+
+            {/* WireGuard Tunnel Details */}
+            <div className="details-section">
+              <h3 className="section-title">WireGuard Tunnel Details</h3>
+              <div className="meta-grid">
+                <div className="meta-card">
+                  <span className="meta-label">Endpoint</span>
+                  <span className="meta-value" title={profile.endpoint}>
+                    <Globe size={13} />
+                    <span className="truncate">{profile.endpoint}</span>
+                  </span>
+                </div>
+
+                <div className="meta-card">
+                  <span className="meta-label">Interface Address</span>
+                  <span className="meta-value" title={profile.address}>
+                    <ArrowUpRight size={13} />
+                    <span className="truncate">{profile.address}</span>
+                  </span>
+                </div>
+
+                <div className="meta-card">
+                  <span className="meta-label">Allowed IPs</span>
+                  <span className="meta-value" title={profile.allowedIps}>
+                    <Shield size={13} />
+                    <span className="truncate">{profile.allowedIps}</span>
+                  </span>
+                </div>
+
+                <div className="meta-card">
+                  <span className="meta-label">DNS Servers</span>
+                  <span className="meta-value" title={profile.dns || "None"}>
+                    <Globe size={13} />
+                    <span className="truncate">{profile.dns || "None"}</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {onDelete && (
+              <div className="details-danger-zone" style={{ marginTop: "16px" }}>
+                <button 
+                  className="btn btn-danger"
+                  onClick={() => onDelete(profile.id)}
+                >
+                  Delete Profile
+                </button>
+              </div>
+            )}
+          </>
         )}
 
-        {/* Traffic Statistics Card */}
-        {profile.status === "running" && stats && (
-          <div className="details-section">
-            <h3 className="section-title">Traffic Statistics</h3>
-            <div className="stats-card">
-              <div className="stats-grid">
-                <div className="stats-metric">
-                  <span className="metric-label">
-                    <ArrowDown size={12} className="stats-label-icon download" /> Download Speed
-                  </span>
-                  <span className="metric-value font-mono">
-                    {formatSpeed(stats.downloadSpeedBytesPerSec)}
-                  </span>
-                </div>
-                <div className="stats-metric">
-                  <span className="metric-label">
-                    <ArrowUp size={12} className="stats-label-icon upload" /> Upload Speed
-                  </span>
-                  <span className="metric-value font-mono">
-                    {formatSpeed(stats.uploadSpeedBytesPerSec)}
-                  </span>
-                </div>
-                <div className="stats-metric">
-                  <span className="metric-label">
-                    <ArrowDown size={12} className="stats-label-icon download" /> Downloaded
-                  </span>
-                  <span className="metric-value font-mono">
-                    {formatBytes(stats.downloadedBytesTotal)}
-                  </span>
-                </div>
-                <div className="stats-metric">
-                  <span className="metric-label">
-                    <ArrowUp size={12} className="stats-label-icon upload" /> Uploaded
-                  </span>
-                  <span className="metric-value font-mono">
-                    {formatBytes(stats.uploadedBytesTotal)}
-                  </span>
-                </div>
-                <div className="stats-metric">
-                  <span className="metric-label">
-                    <Clock size={12} className="stats-label-icon duration" /> Connected For
-                  </span>
-                  <span className="metric-value font-mono">
-                    {formatDuration(stats.connectedForSecs)}
-                  </span>
-                </div>
-                <div className="stats-metric">
-                  <span className="metric-label">
-                    <Activity size={12} className="stats-label-icon handshake" /> Last Handshake
-                  </span>
-                  <span className="metric-value font-mono">
-                    {formatHandshakeAge(stats.lastHandshakeAgeSecs)}
-                  </span>
+        {activeTab === "speed" && (
+          <>
+            {/* Traffic Statistics Card */}
+            {profile.status === "running" && stats ? (
+              <div className="details-section">
+                <h3 className="section-title">Traffic Statistics</h3>
+                <div className="stats-card">
+                  <div className="stats-grid">
+                    <div className="stats-metric">
+                      <span className="metric-label">
+                        <ArrowDown size={12} className="stats-label-icon download" /> Download Speed
+                      </span>
+                      <span className="metric-value font-mono">
+                        {formatSpeed(stats.downloadSpeedBytesPerSec)}
+                      </span>
+                    </div>
+                    <div className="stats-metric">
+                      <span className="metric-label">
+                        <ArrowUp size={12} className="stats-label-icon upload" /> Upload Speed
+                      </span>
+                      <span className="metric-value font-mono">
+                        {formatSpeed(stats.uploadSpeedBytesPerSec)}
+                      </span>
+                    </div>
+                    <div className="stats-metric">
+                      <span className="metric-label">
+                        <ArrowDown size={12} className="stats-label-icon download" /> Downloaded
+                      </span>
+                      <span className="metric-value font-mono">
+                        {formatBytes(stats.downloadedBytesTotal)}
+                      </span>
+                    </div>
+                    <div className="stats-metric">
+                      <span className="metric-label">
+                        <ArrowUp size={12} className="stats-label-icon upload" /> Uploaded
+                      </span>
+                      <span className="metric-value font-mono">
+                        {formatBytes(stats.uploadedBytesTotal)}
+                      </span>
+                    </div>
+                    <div className="stats-metric">
+                      <span className="metric-label">
+                        <Clock size={12} className="stats-label-icon duration" /> Connected For
+                      </span>
+                      <span className="metric-value font-mono">
+                        {formatDuration(stats.connectedForSecs)}
+                      </span>
+                    </div>
+                    <div className="stats-metric">
+                      <span className="metric-label">
+                        <Activity size={12} className="stats-label-icon handshake" /> Last Handshake
+                      </span>
+                      <span className="metric-value font-mono">
+                        {formatHandshakeAge(stats.lastHandshakeAgeSecs)}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          </div>
+            ) : (
+              <div className="stats-empty-state">
+                <div className="stats-empty-icon">
+                  <Activity size={24} />
+                </div>
+                <h4 className="stats-empty-primary">Traffic stats inactive</h4>
+                <p className="stats-empty-secondary">
+                  Start the proxy to view real-time upload and download speeds.
+                </p>
+              </div>
+            )}
+          </>
         )}
 
-        {/* Connection Setup */}
-        <div className="details-section">
-          <h3 className="section-title">Local Proxy Settings</h3>
-          <div className="settings-grid">
-            <div className="form-group">
-              <label htmlFor="proxy-type" className="form-label">Proxy Type</label>
-              <div className="proxy-type-selector">
-                <button 
-                  type="button"
-                  className={`selector-btn ${proxyType === "socks5" ? "active" : ""}`}
-                  onClick={() => !isProxyActive && handleProxyTypeChange("socks5")}
-                  disabled={isProxyActive}
-                >
-                  SOCKS5
-                </button>
-                <button 
-                  type="button"
-                  className={`selector-btn ${proxyType === "http" ? "active" : ""}`}
-                  onClick={() => !isProxyActive && handleProxyTypeChange("http")}
-                  disabled={isProxyActive}
-                >
-                  HTTP
-                </button>
-              </div>
-            </div>
+        {activeTab === "config" && (
+          <>
+            {/* WireProxy Configuration File */}
+            <div className="details-section">
+              <h3 className="section-title">Proxy Configuration File</h3>
+              <div className="config-file-card">
+                <div className="config-file-info">
+                  <div className="config-file-status-wrapper">
+                    <FileCode size={20} className="config-icon" />
+                    <div className="config-file-details">
+                      <span className="config-filename">profile-{profile.id.slice(0, 8)}.conf</span>
+                      <div className="config-status-row">
+                        <span className={`config-status-dot ${configStatus === "ready" ? "success" : (configStatus === "needs_regeneration" ? "warning" : "danger")}`} />
+                        <span className="config-status-text">
+                          {configStatus === "needs_regeneration" 
+                            ? "Needs regeneration (Settings changed)" 
+                            : (configStatus === "not_generated" ? "Not generated yet" : "Ready (Generated & synced)")}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="config-file-actions">
+                    <button 
+                      type="button" 
+                      className={`btn btn-sm ${showGenConfig ? "btn-secondary" : "btn-primary"}`}
+                      onClick={() => setShowGenConfig(!showGenConfig)}
+                      disabled={!generatedConfigMeta}
+                    >
+                      {showGenConfig ? "Hide Preview" : "View Preview"}
+                    </button>
+                    <button 
+                      type="button" 
+                      className="btn btn-sm btn-secondary"
+                      onClick={handleCopyGenConfig}
+                      disabled={!generatedConfigMeta}
+                    >
+                      {copiedGenConfig ? "Copied!" : "Copy"}
+                    </button>
+                    <button 
+                      type="button" 
+                      className={`btn btn-sm ${isOutOfSync ? "btn-primary-glow animate-pulse" : "btn-secondary"}`}
+                      onClick={handleRegenerate}
+                      disabled={isRegenerating}
+                    >
+                      {isRegenerating ? "Generating..." : (generatedConfigMeta ? "Regenerate" : "Generate Config")}
+                    </button>
+                  </div>
+                </div>
 
-            <div className="form-group">
-              <label htmlFor="proxy-port" className="form-label">Local Port</label>
-              <input 
-                id="proxy-port"
-                type="number"
-                min="1024"
-                max="65535"
-                className="form-input"
-                value={port}
-                onChange={handlePortChange}
-                onBlur={handlePortBlur}
-                disabled={isProxyActive}
-              />
-            </div>
-
-            <div className="form-group span-2">
-              <label className="form-label">Local Proxy Endpoint</label>
-              <div className="endpoint-copy-box">
-                <span className="endpoint-text">{proxyType}://127.0.0.1:{port}</span>
-                <button 
-                  className="btn-icon copy-endpoint-btn"
-                  onClick={handleCopyEndpoint}
-                  title="Copy Endpoint"
-                  aria-label="Copy Endpoint"
-                >
-                  {copied ? <Check size={16} className="text-success" /> : <Copy size={16} />}
-                </button>
-              </div>
-            </div>
-
-            <div className="form-group span-2 mt-1">
-              <div className="quick-actions-row">
-                <button
-                  type="button"
-                  className="quick-action-btn"
-                  onClick={handleCopyEndpoint}
-                  title="Copy Proxy URL"
-                >
-                  <Copy size={14} />
-                  <span>Copy Proxy URL</span>
-                </button>
-                <button
-                  type="button"
-                  className="quick-action-btn"
-                  onClick={handleTestIpLeak}
-                  title="Test connection on IPLeak.net"
-                >
-                  <ArrowUpRight size={14} />
-                  <span>Test on IPLeak.net</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="form-group span-2 mt-2">
-              <div className="proxy-action-buttons" style={{ display: "flex", gap: "12px" }}>
-                {profile.status === "running" ? (
-                  <button 
-                    type="button" 
-                    className="btn btn-danger btn-full"
-                    onClick={handleStopProxy}
-                    disabled={isActionLoading}
-                  >
-                    Stop Proxy
-                  </button>
-                ) : (
-                  <button 
-                    type="button" 
-                    className="btn btn-primary btn-full"
-                    onClick={handleStartProxy}
-                    disabled={profile.status === "starting" || isActionLoading}
-                  >
-                    {profile.status === "starting" ? "Starting..." : "Start Proxy"}
-                  </button>
+                {showGenConfig && generatedConfigMeta && (
+                  <div className="config-viewer-wrapper mt-3">
+                    <div className="config-toolbar">
+                      <span className="file-info-tag">wireproxy.conf ({generatedConfigMeta.proxyType.toUpperCase()} on port {generatedConfigMeta.port})</span>
+                      <span className="file-info-tag" style={{ marginLeft: "auto", fontSize: "10px" }}>
+                        Last generated: {new Date(generatedConfigMeta.generatedAt).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <pre className="config-pre">
+                      <code>{maskPrivateKey(generatedConfigMeta.content, maskKey)}</code>
+                    </pre>
+                  </div>
                 )}
               </div>
             </div>
-          </div>
-        </div>
 
-        {/* WireProxy Configuration File */}
-        <div className="details-section">
-          <h3 className="section-title">Proxy Configuration File</h3>
-          <div className="config-file-card">
-            <div className="config-file-info">
-              <div className="config-file-status-wrapper">
-                <FileCode size={20} className="config-icon" />
-                <div className="config-file-details">
-                  <span className="config-filename">profile-{profile.id.slice(0, 8)}.conf</span>
-                  <div className="config-status-row">
-                    <span className={`config-status-dot ${configStatus === "ready" ? "success" : (configStatus === "needs_regeneration" ? "warning" : "danger")}`} />
-                    <span className="config-status-text">
-                      {configStatus === "needs_regeneration" 
-                        ? "Needs regeneration (Settings changed)" 
-                        : (configStatus === "not_generated" ? "Not generated yet" : "Ready (Generated & synced)")}
+            {/* Raw Config Code Block */}
+            <div className="details-section">
+              <div className="config-header" onClick={() => setShowConfig(!showConfig)}>
+                <div className="config-title-wrapper">
+                  <FileText size={16} />
+                  <span>Raw WireGuard Config</span>
+                </div>
+                <button className="btn-toggle-config">
+                  {showConfig ? "Hide" : "Show"}
+                </button>
+              </div>
+
+              {showConfig && (
+                <div className="config-viewer-wrapper">
+                  <div className="config-toolbar">
+                    <span className="file-info-tag">
+                      {profile.sourcePath ? `Source: ${profile.sourcePath.split("/").pop()}` : "Config Content"}
                     </span>
+                    <div className="toolbar-actions">
+                      <button 
+                        className="toolbar-btn"
+                        onClick={() => setMaskKey(!maskKey)}
+                        title={maskKey ? "Show Private Key" : "Hide Private Key"}
+                      >
+                        {maskKey ? <Eye size={14} /> : <EyeOff size={14} />}
+                        <span>{maskKey ? "Reveal Key" : "Mask Key"}</span>
+                      </button>
+                      <button 
+                        className="toolbar-btn"
+                        onClick={handleCopyConfig}
+                        title="Copy full configuration content"
+                      >
+                        {copiedConfig ? <Check size={14} /> : <Copy size={14} />}
+                        <span>{copiedConfig ? "Copied!" : "Copy"}</span>
+                      </button>
+                    </div>
                   </div>
+                  <pre className="config-pre">
+                    <code>{maskPrivateKey(profile.configContent, maskKey)}</code>
+                  </pre>
                 </div>
-              </div>
-              
-              <div className="config-file-actions">
-                <button 
-                  type="button" 
-                  className={`btn btn-sm ${showGenConfig ? "btn-secondary" : "btn-primary"}`}
-                  onClick={() => setShowGenConfig(!showGenConfig)}
-                  disabled={!generatedConfigMeta}
-                >
-                  {showGenConfig ? "Hide Preview" : "View Preview"}
-                </button>
-                <button 
-                  type="button" 
-                  className="btn btn-sm btn-secondary"
-                  onClick={handleCopyGenConfig}
-                  disabled={!generatedConfigMeta}
-                >
-                  {copiedGenConfig ? "Copied!" : "Copy"}
-                </button>
-                <button 
-                  type="button" 
-                  className={`btn btn-sm ${isOutOfSync ? "btn-primary-glow animate-pulse" : "btn-secondary"}`}
-                  onClick={handleRegenerate}
-                  disabled={isRegenerating}
-                >
-                  {isRegenerating ? "Generating..." : (generatedConfigMeta ? "Regenerate" : "Generate Config")}
-                </button>
-              </div>
+              )}
             </div>
+          </>
+        )}
 
-            {showGenConfig && generatedConfigMeta && (
-              <div className="config-viewer-wrapper mt-3">
-                <div className="config-toolbar">
-                  <span className="file-info-tag">wireproxy.conf ({generatedConfigMeta.proxyType.toUpperCase()} on port {generatedConfigMeta.port})</span>
-                  <span className="file-info-tag" style={{ marginLeft: "auto", fontSize: "10px" }}>
-                    Last generated: {new Date(generatedConfigMeta.generatedAt).toLocaleTimeString()}
-                  </span>
-                </div>
-                <pre className="config-pre">
-                  <code>{maskPrivateKey(generatedConfigMeta.content, maskKey)}</code>
-                </pre>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* WireGuard Configuration Info */}
-        <div className="details-section">
-          <h3 className="section-title">WireGuard Tunnel Details</h3>
-          <div className="meta-grid">
-            <div className="meta-card">
-              <span className="meta-label">Endpoint</span>
-              <span className="meta-value" title={profile.endpoint}>
-                <Globe size={13} />
-                <span className="truncate">{profile.endpoint}</span>
-              </span>
-            </div>
-
-            <div className="meta-card">
-              <span className="meta-label">Interface Address</span>
-              <span className="meta-value" title={profile.address}>
-                <ArrowUpRight size={13} />
-                <span className="truncate">{profile.address}</span>
-              </span>
-            </div>
-
-            <div className="meta-card">
-              <span className="meta-label">Allowed IPs</span>
-              <span className="meta-value" title={profile.allowedIps}>
-                <Shield size={13} />
-                <span className="truncate">{profile.allowedIps}</span>
-              </span>
-            </div>
-
-            <div className="meta-card">
-              <span className="meta-label">DNS Servers</span>
-              <span className="meta-value" title={profile.dns || "None"}>
-                <Globe size={13} />
-                <span className="truncate">{profile.dns || "None"}</span>
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Raw Config Code Block */}
-        <div className="details-section">
-          <div className="config-header" onClick={() => setShowConfig(!showConfig)}>
-            <div className="config-title-wrapper">
-              <FileText size={16} />
-              <span>Raw WireGuard Config</span>
-            </div>
-            <button className="btn-toggle-config">
-              {showConfig ? "Hide" : "Show"}
-            </button>
-          </div>
-
-          {showConfig && (
-            <div className="config-viewer-wrapper">
-              <div className="config-toolbar">
-                <span className="file-info-tag">
-                  {profile.sourcePath ? `Source: ${profile.sourcePath.split("/").pop()}` : "Config Content"}
-                </span>
-                <div className="toolbar-actions">
-                  <button 
-                    className="toolbar-btn"
-                    onClick={() => setMaskKey(!maskKey)}
-                    title={maskKey ? "Show Private Key" : "Hide Private Key"}
-                  >
-                    {maskKey ? <Eye size={14} /> : <EyeOff size={14} />}
-                    <span>{maskKey ? "Reveal Key" : "Mask Key"}</span>
-                  </button>
-                  <button 
-                    className="toolbar-btn"
-                    onClick={handleCopyConfig}
-                    title="Copy full configuration content"
-                  >
-                    {copiedConfig ? <Check size={14} /> : <Copy size={14} />}
-                    <span>{copiedConfig ? "Copied!" : "Copy"}</span>
-                  </button>
-                </div>
-              </div>
-              <pre className="config-pre">
-                <code>{maskPrivateKey(profile.configContent, maskKey)}</code>
-              </pre>
-            </div>
-          )}
-        </div>
-
-        {/* Runtime Logs Section */}
-        <div className="details-section">
-          <div className="logs-section-header" onClick={() => setIsLogsExpanded(!isLogsExpanded)}>
-            <h3 className="section-title">
-              <ChevronRight size={14} className={`collapse-chevron ${isLogsExpanded ? "expanded" : ""}`} />
-              Runtime Logs
-            </h3>
-            <span className="logs-count-badge">
-              {logs.length} {logs.length === 1 ? "entry" : "entries"}
-            </span>
-          </div>
-
-          {isLogsExpanded && (
+        {activeTab === "logs" && (
+          <div className="details-section">
             <div className="logs-card">
               <div className="logs-header">
                 <div className="logs-title-wrapper">
@@ -1161,17 +1275,6 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                 )}
               </div>
             </div>
-          )}
-        </div>
-
-        {onDelete && (
-          <div className="details-danger-zone">
-            <button 
-              className="btn btn-danger"
-              onClick={() => onDelete(profile.id)}
-            >
-              Delete Profile
-            </button>
           </div>
         )}
       </div>

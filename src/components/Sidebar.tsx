@@ -1,5 +1,5 @@
 import React from "react";
-import { Plus, Settings, Shield, Info } from "lucide-react";
+import { Plus, Shield, Info } from "lucide-react";
 import { Profile } from "../types";
 
 interface SidebarProps {
@@ -7,7 +7,6 @@ interface SidebarProps {
   selectedProfileId: string | null;
   onProfileSelect: (id: string | null) => void;
   onImportClick: () => void;
-  onSettingsClick: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -15,7 +14,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   selectedProfileId,
   onProfileSelect,
   onImportClick,
-  onSettingsClick,
 }) => {
   return (
     <aside className="app-sidebar">
@@ -66,22 +64,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             ))}
           </ul>
         )}
-      </div>
-
-      {/* Sidebar Footer */}
-      <div className="sidebar-footer">
-        <div className="footer-status">
-          <div className="status-dot disconnected" />
-          <span className="status-text">Engine: Offline</span>
-        </div>
-        <button 
-          className="btn-icon settings-btn" 
-          onClick={onSettingsClick}
-          aria-label="Settings"
-          title="Settings"
-        >
-          <Settings size={18} />
-        </button>
       </div>
     </aside>
   );

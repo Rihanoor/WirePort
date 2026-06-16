@@ -15,12 +15,15 @@
     "wireport:allow-load-profiles",
     "wireport:allow-generate-wireproxy-config",
     "wireport:allow-load-generated-config",
-    "wireport:allow-load-settings",
-    "wireport:allow-save-settings",
-    "wireport:allow-pick-wireproxy-binary",
     "wireport:allow-start-wireproxy",
     "wireport:allow-stop-wireproxy",
     "wireport:allow-get-profile-status",
-    "wireport:allow-set-selected-profile"
+    "wireport:allow-set-selected-profile",
+    "notification:default",
+    "wireport:allow-test-proxy-connection",
+    "wireport:allow-get-local-public-ip",
+    "wireport:allow-get-profile-logs",
+    "wireport:allow-clear-profile-logs",
+    "wireport:allow-get-proxy-stats"
   ]
 }

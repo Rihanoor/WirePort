@@ -1,7 +1,6 @@
 import React from "react";
 import { 
   Shield, 
-  Settings, 
   Plus, 
   ArrowRight, 
   Cpu, 
@@ -17,14 +16,12 @@ interface DashboardProps {
   profiles: Profile[];
   onProfileSelect: (id: string | null) => void;
   onImportClick: () => void;
-  onSettingsClick: () => void;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
   profiles,
   onProfileSelect,
-  onImportClick,
-  onSettingsClick
+  onImportClick
 }) => {
   // Counters
   const totalProfiles = profiles.length;
@@ -213,11 +210,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <button className="btn btn-primary btn-full btn-action-dashboard" onClick={onImportClick}>
                 <Plus size={16} />
                 <span>Import WireGuard Config</span>
-              </button>
-              
-              <button className="btn btn-secondary btn-full btn-action-dashboard" onClick={onSettingsClick}>
-                <Settings size={16} />
-                <span>Configure Global Settings</span>
               </button>
             </div>
           </div>

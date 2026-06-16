@@ -1,8 +1,9 @@
 [package]
 name = "wireport"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Lightweight desktop GUI client converting WireGuard profiles into local SOCKS5/HTTP proxies"
+authors = ["Rihanoor <rihanoor@lightib.com>"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
