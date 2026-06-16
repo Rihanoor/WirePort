@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { X, FolderOpen } from "lucide-react";
+import { X, FolderOpen, ChevronDown } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { AppSettings } from "../types";
 
@@ -16,6 +16,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const [binaryPath, setBinaryPath] = useState(settings.wireproxyBinaryPath || "");
   const [isSaving, setIsSaving] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(!!settings.wireproxyBinaryPath);
 
   const handleBrowse = async () => {
     try {
@@ -56,33 +57,69 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         <form onSubmit={handleSave}>
           <div className="modal-body">
-            <div className="form-group">
-              <label htmlFor="binary-path" className="form-label">
-                WireProxy Binary Path
-              </label>
-              <div className="input-with-browse">
-                <input
-                  id="binary-path"
-                  type="text"
-                  placeholder="e.g. /usr/local/bin/wireproxy"
-                  className="form-input"
-                  value={binaryPath}
-                  onChange={(e) => setBinaryPath(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-browse"
-                  onClick={handleBrowse}
-                  title="Browse local files"
-                >
-                  <FolderOpen size={16} />
-                  <span>Browse</span>
-                </button>
-              </div>
-              <span className="form-help-text">
-                Specify the absolute path to the local WireProxy executable binary.
-              </span>
+            <div className="settings-info-card">
+              <span className="settings-info-badge">Default</span>
+              <p className="settings-info-text">
+                WirePort uses the bundled WireProxy sidecar by default to manage your connections. No setup is required.
+              </p>
             </div>
+
+            <div className="advanced-settings-toggle-wrapper">
+              <button
+                type="button"
+                className="btn-toggle-advanced"
+                onClick={() => setShowAdvanced(!showAdvanced)}
+              >
+                <span>{showAdvanced ? "Hide Advanced Settings" : "Show Advanced Settings"}</span>
+                <ChevronDown
+                  size={16}
+                  className={`chevron-icon ${showAdvanced ? "expanded" : ""}`}
+                />
+              </button>
+            </div>
+
+            {showAdvanced && (
+              <div className="advanced-settings-content">
+                <div className="form-group">
+                  <div className="form-label-row">
+                    <label htmlFor="binary-path" className="form-label">
+                      Custom WireProxy Binary Path
+                    </label>
+                    {binaryPath && (
+                      <button
+                        type="button"
+                        className="btn-reset-binary"
+                        onClick={() => setBinaryPath("")}
+                      >
+                        Reset to bundled binary
+                      </button>
+                    )}
+                  </div>
+                  <div className="input-with-browse">
+                    <input
+                      id="binary-path"
+                      type="text"
+                      placeholder="e.g. /usr/local/bin/wireproxy"
+                      className="form-input"
+                      value={binaryPath}
+                      onChange={(e) => setBinaryPath(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-browse"
+                      onClick={handleBrowse}
+                      title="Browse local files"
+                    >
+                      <FolderOpen size={16} />
+                      <span>Browse</span>
+                    </button>
+                  </div>
+                  <span className="form-help-text">
+                    Specify the absolute path to a custom WireProxy executable binary to override the bundled version.
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="modal-footer">

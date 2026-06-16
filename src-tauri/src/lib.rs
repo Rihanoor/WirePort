@@ -319,18 +319,67 @@ pub struct ProcessManager {
     processes: Mutex<HashMap<String, Child>>,
 }
 
+fn get_bundled_sidecar_path(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let target_triple = if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+        "aarch64-apple-darwin"
+    } else if cfg!(all(target_arch = "x86_64", target_os = "macos")) {
+        "x86_64-apple-darwin"
+    } else if cfg!(all(target_arch = "x86_64", target_os = "windows")) {
+        "x86_64-pc-windows-msvc"
+    } else if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
+        "x86_64-unknown-linux-gnu"
+    } else {
+        "aarch64-apple-darwin"
+    };
+
+    let bin_name = format!("wireproxy-{}", target_triple);
+
+    // 1. Production bundle lookup: sidecar binary should be alongside the current executable
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let prod_path = exe_dir.join(&bin_name);
+            if prod_path.exists() && prod_path.is_file() {
+                return Ok(prod_path);
+            }
+        }
+    }
+
+    // 2. Development lookup: sidecar is located in src-tauri/binaries/ relative to resource_dir()
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        let dev_path = resource_dir.join("binaries").join(&bin_name);
+        if dev_path.exists() && dev_path.is_file() {
+            return Ok(dev_path);
+        }
+    }
+
+    // 3. Last resort fallback to current working directory
+    let fallback_path = std::path::PathBuf::from("binaries").join(&bin_name);
+    if fallback_path.exists() && fallback_path.is_file() {
+        return Ok(fallback_path);
+    }
+
+    Err("Could not find bundled WireProxy sidecar binary".to_string())
+}
+
 #[tauri::command]
 fn start_wireproxy(
+    app_handle: tauri::AppHandle,
     profile_id: String,
     config_path: String,
     binary_path: String,
     port: u16,
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<(), String> {
-    // 1. Verify binary path exists and is a file
-    let bin_path = std::path::Path::new(&binary_path);
+    // 1. Resolve binary path
+    let bin_path = if !binary_path.trim().is_empty() {
+        std::path::PathBuf::from(&binary_path)
+    } else {
+        get_bundled_sidecar_path(&app_handle)?
+    };
+
+    // Verify binary path exists and is a file
     if !bin_path.exists() || !bin_path.is_file() {
-        return Err(format!("WireProxy binary not found at: {}", binary_path));
+        return Err(format!("WireProxy binary not found at: {}", bin_path.display()));
     }
 
     // 2. Verify generated config exists
@@ -367,7 +416,7 @@ fn start_wireproxy(
     }
 
     // 5. Spawn the child process
-    let mut child = std::process::Command::new(&binary_path)
+    let mut child = std::process::Command::new(&bin_path)
         .arg("-c")
         .arg(&config_path)
         .stdout(std::process::Stdio::piped())

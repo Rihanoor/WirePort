@@ -1363,3 +1363,95 @@
     opacity: 1;
   }
 }
+
+/* Custom Advanced Settings Styles */
+.settings-info-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background-color: rgba(99, 102, 241, 0.05);
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.settings-info-badge {
+  background-color: var(--primary);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.settings-info-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 18px;
+  margin: 0;
+}
+
+.advanced-settings-toggle-wrapper {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.btn-toggle-advanced {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.15s ease;
+}
+
+.btn-toggle-advanced:hover {
+  color: var(--text-primary);
+}
+
+.btn-toggle-advanced .chevron-icon {
+  transition: transform 0.2s ease;
+}
+
+.btn-toggle-advanced .chevron-icon.expanded {
+  transform: rotate(180deg);
+}
+
+.advanced-settings-content {
+  margin-top: 16px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.form-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.btn-reset-binary {
+  background: none;
+  border: none;
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.15s ease;
+}
+
+.btn-reset-binary:hover {
+  color: #ef4444;
+  text-decoration: underline;
+}
+

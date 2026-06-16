@@ -177,11 +177,6 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   };
 
   const handleStartProxy = async () => {
-    if (!wireproxyBinaryPath) {
-      alert("Please configure the WireProxy binary path in settings first.");
-      return;
-    }
-
     if (configStatus !== "ready" || !generatedConfigMeta) {
       alert("Please generate or regenerate the proxy configuration file first.");
       return;
