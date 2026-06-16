@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { 
   Shield, Globe, Calendar, Copy, Check, Eye, EyeOff, 
-  FileText, ArrowUpRight, CheckCircle2, XCircle, AlertCircle, HelpCircle, FileCode
+  FileText, ArrowUpRight, CheckCircle2, XCircle, AlertCircle, HelpCircle, FileCode,
+  Activity, RefreshCw, Clock
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { Profile, ProxyType, ProfileStatus, GeneratedConfigMeta } from "../types";
+import { Profile, ProxyType, ProfileStatus, GeneratedConfigMeta, ConnectionHealthResult } from "../types";
+
 
 interface ProfileDetailsProps {
   profile: Profile;
@@ -37,6 +39,17 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   const [maskKey, setMaskKey] = useState(true);
   const [copied, setCopied] = useState(false);
   const [copiedConfig, setCopiedConfig] = useState(false);
+
+  // Connection Health State
+  const [health, setHealth] = useState<ConnectionHealthResult | null>(null);
+  const [lastSuccessHealth, setLastSuccessHealth] = useState<ConnectionHealthResult | null>(null);
+  const [isCheckingHealth, setIsCheckingHealth] = useState(false);
+  const [lastCheckedTime, setLastCheckedTime] = useState<string | null>(null);
+  const [autoCheck, setAutoCheck] = useState<boolean>(() => {
+    const saved = localStorage.getItem("autoCheckHealth");
+    return saved !== null ? saved === "true" : true;
+  });
+
 
   // Sync state with profile prop when it changes
   useEffect(() => {
@@ -78,6 +91,67 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     const interval = setInterval(checkStatus, 3000);
     return () => clearInterval(interval);
   }, [profile.id]);
+
+  // Persist autoCheck preference
+  useEffect(() => {
+    localStorage.setItem("autoCheckHealth", autoCheck.toString());
+  }, [autoCheck]);
+
+  // Function to run a health check
+  const checkConnection = async (force: boolean = false) => {
+    if (isCheckingHealth || (profile.status !== "running" && !force)) return;
+    setIsCheckingHealth(true);
+    try {
+      const result = await invoke<ConnectionHealthResult>("test_proxy_connection", {
+        profileId: profile.id,
+      });
+      setHealth(result);
+      setLastCheckedTime(new Date().toLocaleTimeString());
+      if (result.success) {
+        setLastSuccessHealth(result);
+      }
+    } catch (err: any) {
+      console.error("Connection health check failed:", err);
+      const errResult: ConnectionHealthResult = {
+        success: false,
+        tunnelActive: false,
+        exitIp: "",
+        localIp: "",
+        latencyMs: 0,
+        error: err.toString() || "Unknown error",
+      };
+      setHealth(errResult);
+      setLastCheckedTime(new Date().toLocaleTimeString());
+    } finally {
+      setIsCheckingHealth(false);
+    }
+  };
+
+  // Trigger health check on status change or auto-check interval
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null;
+    
+    if (profile.status === "running") {
+      // Trigger check immediately when status becomes running
+      checkConnection();
+      
+      if (autoCheck) {
+        interval = setInterval(() => {
+          checkConnection();
+        }, 30000); // 30-second interval
+      }
+    } else {
+      // Reset health state when proxy is not running
+      setHealth(null);
+      setLastSuccessHealth(null);
+      setLastCheckedTime(null);
+    }
+    
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [profile.status, profile.id, autoCheck]);
+
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setName(e.target.value);
@@ -277,6 +351,146 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
       </div>
 
       <div className="details-body">
+        {/* Connection Health Card */}
+        {profile.status === "running" && (
+          <div className="details-section">
+            <h3 className="section-title">Connection Health</h3>
+            <div className="health-card">
+              <div className="health-card-header">
+                <div className="health-status-wrapper">
+                  <Activity size={18} className={`health-icon ${isCheckingHealth ? "animate-pulse" : ""}`} />
+                  <span className="health-card-title">Connection Stats</span>
+                </div>
+                <div className="health-actions">
+                  <label className="auto-check-toggle" htmlFor="auto-check-cb">
+                    <input 
+                      id="auto-check-cb"
+                      type="checkbox"
+                      checked={autoCheck}
+                      onChange={(e) => setAutoCheck(e.target.checked)}
+                    />
+                    <span>Auto-check (30s)</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary btn-health-test"
+                    onClick={() => checkConnection(true)}
+                    disabled={isCheckingHealth}
+                  >
+                    {isCheckingHealth ? (
+                      <>
+                        <RefreshCw size={12} className="animate-spin" />
+                        <span>Testing...</span>
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw size={12} />
+                        <span>Test Connection</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div className="health-grid">
+                <div className="health-metric">
+                  <span className="metric-label">Tunnel Active</span>
+                  <div className="metric-value">
+                    {isCheckingHealth && !health ? (
+                      <span className="status-indicator-text checking">Checking...</span>
+                    ) : health?.success && health.tunnelActive ? (
+                      <span className="status-indicator-text active">
+                        <span className="health-dot active" /> Yes
+                      </span>
+                    ) : (
+                      <span className="status-indicator-text inactive">
+                        <span className="health-dot inactive" /> No
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="health-metric">
+                  <span className="metric-label">Latency</span>
+                  <div className="metric-value font-mono">
+                    {health?.success ? (
+                      `${health.latencyMs} ms`
+                    ) : lastSuccessHealth ? (
+                      <span className="fallback-value" title="Last successful latency">
+                        {lastSuccessHealth.latencyMs} ms <span className="fallback-tag">(Last Ok)</span>
+                      </span>
+                    ) : isCheckingHealth ? (
+                      "Checking..."
+                    ) : (
+                      "--"
+                    )}
+                  </div>
+                </div>
+
+                <div className="health-metric">
+                  <span className="metric-label">Exit IP</span>
+                  <div className="metric-value font-mono">
+                    {health?.success ? (
+                      health.exitIp
+                    ) : lastSuccessHealth ? (
+                      <span className="fallback-value" title="Last successful exit IP">
+                        {lastSuccessHealth.exitIp} <span className="fallback-tag">(Last Ok)</span>
+                      </span>
+                    ) : isCheckingHealth ? (
+                      "Checking..."
+                    ) : (
+                      "N/A"
+                    )}
+                  </div>
+                </div>
+
+                <div className="health-metric">
+                  <span className="metric-label">Local IP</span>
+                  <div className="metric-value font-mono">
+                    {health?.localIp ? (
+                      health.localIp
+                    ) : isCheckingHealth ? (
+                      "Checking..."
+                    ) : (
+                      "Unknown"
+                    )}
+                  </div>
+                </div>
+
+                <div className="health-metric">
+                  <span className="metric-label">Last Checked</span>
+                  <div className="metric-value font-mono">
+                    {lastCheckedTime ? (
+                      <span className="timestamp-value">
+                        <Clock size={12} style={{ marginRight: '4px', display: 'inline', verticalAlign: 'middle' }} /> {lastCheckedTime}
+                      </span>
+                    ) : (
+                      "Never"
+                    )}
+                  </div>
+                </div>
+
+                <div className="health-metric">
+                  {/* Empty block to balance 2-column grid row */}
+                </div>
+
+                <div className="health-metric span-2">
+                  <span className="metric-label">Last Error</span>
+                  <div className={`metric-value error-message-box ${health && !health.success ? "has-error" : ""}`}>
+                    {health ? (
+                      health.success ? "None" : health.error
+                    ) : isCheckingHealth ? (
+                      "Checking connection..."
+                    ) : (
+                      "None"
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Connection Setup */}
         <div className="details-section">
           <h3 className="section-title">Local Proxy Settings</h3>

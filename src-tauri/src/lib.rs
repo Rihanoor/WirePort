@@ -315,8 +315,14 @@ use std::collections::HashMap;
 use std::process::Child;
 use std::sync::Mutex;
 
+struct LocalIpCache {
+    ip: String,
+    fetched_at: std::time::Instant,
+}
+
 pub struct ProcessManager {
     processes: Mutex<HashMap<String, Child>>,
+    local_ip_cache: Mutex<Option<LocalIpCache>>,
 }
 
 fn get_bundled_sidecar_path(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -493,12 +499,220 @@ fn get_profile_status(
     }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionHealthResult {
+    success: bool,
+    tunnel_active: bool,
+    exit_ip: String,
+    local_ip: String,
+    latency_ms: u64,
+    error: String,
+}
+
+async fn get_local_public_ip_internal(
+    state: &ProcessManager,
+) -> Result<String, String> {
+    // Check if cached (5 min = 300 seconds)
+    {
+        let cache = state.local_ip_cache.lock().unwrap();
+        if let Some(ref cached) = *cache {
+            if cached.fetched_at.elapsed() < std::time::Duration::from_secs(300) {
+                return Ok(cached.ip.clone());
+            }
+        }
+    }
+
+    // Fetch new
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to build client for local IP lookup: {}", e))?;
+
+    let providers = [
+        "https://api.ipify.org",
+        "https://api64.ipify.org",
+        "https://ifconfig.me/ip",
+    ];
+
+    let mut last_error = String::new();
+    for provider in &providers {
+        match client.get(*provider).send().await {
+            Ok(res) => {
+                if res.status().is_success() {
+                    if let Ok(body) = res.text().await {
+                        let ip = body.trim().to_string();
+                        if !ip.is_empty() {
+                            let mut cache = state.local_ip_cache.lock().unwrap();
+                            *cache = Some(LocalIpCache {
+                                ip: ip.clone(),
+                                fetched_at: std::time::Instant::now(),
+                            });
+                            return Ok(ip);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                last_error = format!("Request to {} failed: {}", provider, e);
+            }
+        }
+    }
+
+    Err(format!(
+        "Failed to fetch local public IP. Last error: {}",
+        last_error
+    ))
+}
+
+#[tauri::command]
+async fn get_local_public_ip(
+    state: tauri::State<'_, ProcessManager>,
+) -> Result<String, String> {
+    get_local_public_ip_internal(&state).await
+}
+
+#[tauri::command]
+async fn test_proxy_connection(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, ProcessManager>,
+    profile_id: String,
+) -> Result<ConnectionHealthResult, String> {
+    // 1. Fetch local public IP first
+    let local_ip = match get_local_public_ip_internal(&state).await {
+        Ok(ip) => ip,
+        Err(e) => return Ok(ConnectionHealthResult {
+            success: false,
+            tunnel_active: false,
+            exit_ip: String::new(),
+            local_ip: String::new(),
+            latency_ms: 0,
+            error: format!("Failed to fetch local public IP: {}", e),
+        }),
+    };
+
+    // 2. Get proxy settings
+    let app_dir = app_handle.path().app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let file_path = app_dir.join("generated").join(format!("{}.conf", profile_id));
+    if !file_path.exists() {
+        return Ok(ConnectionHealthResult {
+            success: false,
+            tunnel_active: false,
+            exit_ip: String::new(),
+            local_ip,
+            latency_ms: 0,
+            error: "Configuration file not found. Please regenerate configuration.".to_string(),
+        });
+    }
+
+    let content = std::fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read generated config: {}", e))?;
+
+    let (_, proxy_type, port) = parse_meta_comments(&content);
+
+    // 3. Build reqwest proxy client
+    let proxy_url = if proxy_type.to_lowercase() == "http" {
+        format!("http://127.0.0.1:{}", port)
+    } else {
+        format!("socks5://127.0.0.1:{}", port)
+    };
+
+    let proxy = match reqwest::Proxy::all(&proxy_url) {
+        Ok(p) => p,
+        Err(e) => return Ok(ConnectionHealthResult {
+            success: false,
+            tunnel_active: false,
+            exit_ip: String::new(),
+            local_ip,
+            latency_ms: 0,
+            error: format!("Failed to configure proxy URL: {}", e),
+        }),
+    };
+
+    let client = match reqwest::Client::builder()
+        .proxy(proxy)
+        .timeout(std::time::Duration::from_secs(5))
+        .build() {
+            Ok(c) => c,
+            Err(e) => return Ok(ConnectionHealthResult {
+                success: false,
+                tunnel_active: false,
+                exit_ip: String::new(),
+                local_ip,
+                latency_ms: 0,
+                error: format!("Failed to build HTTP client: {}", e),
+            }),
+        };
+
+    // 4. Make HTTP request with fallbacks
+    let providers = [
+        "https://api.ipify.org",
+        "https://api64.ipify.org",
+        "https://ifconfig.me/ip",
+    ];
+
+    let start_time = std::time::Instant::now();
+    let mut last_error = String::new();
+
+    for provider in &providers {
+        match client.get(*provider).send().await {
+            Ok(res) => {
+                if res.status().is_success() {
+                    match res.text().await {
+                        Ok(body) => {
+                            let exit_ip = body.trim().to_string();
+                            if !exit_ip.is_empty() {
+                                let latency_ms = start_time.elapsed().as_millis() as u64;
+                                // True tunnel verification logic
+                                let tunnel_active = !exit_ip.is_empty() && !local_ip.is_empty() && exit_ip != local_ip;
+
+                                return Ok(ConnectionHealthResult {
+                                    success: true,
+                                    tunnel_active,
+                                    exit_ip,
+                                    local_ip: local_ip.clone(),
+                                    latency_ms,
+                                    error: "None".to_string(),
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            last_error = format!("Failed to read body from {}: {}", provider, e);
+                        }
+                    }
+                } else {
+                    last_error = format!("HTTP error from {}: status {}", provider, res.status());
+                }
+            }
+            Err(e) => {
+                last_error = format!("Request to {} failed: {}", provider, e);
+            }
+        }
+    }
+
+    // If all providers failed
+    Ok(ConnectionHealthResult {
+        success: false,
+        tunnel_active: false,
+        exit_ip: String::new(),
+        local_ip,
+        latency_ms: 0,
+        error: if last_error.is_empty() {
+            "All connection providers failed to respond.".to_string()
+        } else {
+            last_error
+        },
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(ProcessManager {
             processes: Mutex::new(HashMap::new()),
+            local_ip_cache: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             pick_parse_and_validate_file,
@@ -511,7 +725,9 @@ pub fn run() {
             pick_wireproxy_binary,
             start_wireproxy,
             stop_wireproxy,
-            get_profile_status
+            get_profile_status,
+            test_proxy_connection,
+            get_local_public_ip
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

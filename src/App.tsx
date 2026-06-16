@@ -23,6 +23,15 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>({ wireproxyBinaryPath: "" });
   const [showSettings, setShowSettings] = useState(false);
 
+  const selectProfile = (id: string | null) => {
+    setSelectedProfileId(id);
+    if (id) {
+      localStorage.setItem("lastUsedProfileId", id);
+    } else {
+      localStorage.removeItem("lastUsedProfileId");
+    }
+  };
+
   // Load profiles and settings from local storage on mount
   useEffect(() => {
     const fetchProfilesAndSettings = async () => {
@@ -32,6 +41,14 @@ function App() {
         // Force stopped status on launch for all profiles
         const stoppedProfiles = loaded.map(p => ({ ...p, status: "stopped" as const }));
         setProfiles(stoppedProfiles);
+
+        // Restore last used profile
+        const lastUsedId = localStorage.getItem("lastUsedProfileId");
+        if (lastUsedId && stoppedProfiles.some(p => p.id === lastUsedId)) {
+          setSelectedProfileId(lastUsedId);
+        } else if (stoppedProfiles.length > 0) {
+          setSelectedProfileId(stoppedProfiles[0].id);
+        }
       } catch (err) {
         console.error("Failed to load profiles:", err);
         showToast("Failed to load profiles from storage", "error");
@@ -124,7 +141,7 @@ function App() {
         console.error("Failed to generate initial config:", genErr);
       }
 
-      setSelectedProfileId(newProfile.id);
+      selectProfile(newProfile.id);
       showToast(`Imported profile "${profileName}"`, "success");
     } catch (err: any) {
       console.error("Import error:", err);
@@ -178,7 +195,7 @@ function App() {
       await invoke("save_profiles", { profilesJson: JSON.stringify(profilesToSave) });
       setProfiles(updatedProfiles);
       if (selectedProfileId === id) {
-        setSelectedProfileId(null);
+        selectProfile(null);
       }
       showToast("Profile deleted", "success");
     } catch (err: any) {
@@ -203,7 +220,7 @@ function App() {
       <Sidebar
         profiles={profiles}
         selectedProfileId={selectedProfileId}
-        onProfileSelect={setSelectedProfileId}
+        onProfileSelect={selectProfile}
         onImportClick={handleImportProfile}
         onSettingsClick={handleOpenSettings}
       />

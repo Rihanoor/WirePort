@@ -29,3 +29,13 @@ export interface GeneratedConfigMeta {
   proxyType: ProxyType;
   port: number;
 }
+
+export interface ConnectionHealthResult {
+  success: boolean;
+  tunnelActive: boolean;
+  exitIp: string;
+  localIp: string;
+  latencyMs: number;
+  error: string;
+}
+

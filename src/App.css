@@ -1455,3 +1455,185 @@
   text-decoration: underline;
 }
 
+/* Connection Health Card Styles */
+.health-card {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.health-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 14px;
+  margin-bottom: 18px;
+}
+
+.health-status-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.health-icon {
+  color: var(--primary);
+}
+
+.health-icon.animate-pulse {
+  animation: pulse-indicator 1.5s infinite ease-in-out;
+}
+
+.health-card-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.health-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.auto-check-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.auto-check-toggle input[type="checkbox"] {
+  accent-color: var(--primary);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.btn-health-test {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  border-radius: 6px;
+  border-color: var(--border);
+  background-color: var(--bg-app);
+}
+
+.btn-health-test:hover:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+.health-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.health-metric.span-2 {
+  grid-column: span 2;
+}
+
+.metric-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.metric-value {
+  font-size: 13.5px;
+  color: var(--text-primary);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+}
+
+.health-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+}
+
+.health-dot.active {
+  background-color: var(--success);
+  box-shadow: 0 0 8px var(--success-glow);
+}
+
+.health-dot.inactive {
+  background-color: var(--danger);
+  box-shadow: 0 0 8px var(--danger-glow);
+}
+
+.status-indicator-text {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+}
+
+.status-indicator-text.active {
+  color: var(--success);
+}
+
+.status-indicator-text.inactive {
+  color: var(--danger);
+}
+
+.status-indicator-text.checking {
+  color: var(--text-secondary);
+}
+
+.fallback-value {
+  color: var(--text-secondary);
+}
+
+.fallback-tag {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-left: 6px;
+}
+
+.timestamp-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+}
+
+.error-message-box {
+  background-color: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-muted);
+  min-height: 40px;
+  width: 100%;
+}
+
+.error-message-box.has-error {
+  background-color: var(--danger-glow);
+  border-color: rgba(239, 68, 68, 0.2);
+  color: var(--danger);
+  font-family: var(--font-mono);
+}
+
+
