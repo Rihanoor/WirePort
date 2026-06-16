@@ -1,17 +1,21 @@
-export type ProfileStatus = "connected" | "disconnected" | "connecting";
+export type ProfileStatus = "running" | "stopped" | "starting" | "error";
 
 export type ProxyType = "socks5" | "http";
 
 export interface Profile {
   id: string;
   name: string;
-  configContent: string;
   proxyType: ProxyType;
   port: number;
+  endpoint: string;
+  dns: string;
+  address: string;
+  allowedIps: string;
+  sourcePath?: string;
+  configContent: string;
   status: ProfileStatus;
-  dns?: string;
-  endpoint?: string;
-  lastUsed?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AppSettings {

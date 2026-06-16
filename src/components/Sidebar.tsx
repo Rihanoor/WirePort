@@ -4,12 +4,16 @@ import { Profile } from "../types";
 
 interface SidebarProps {
   profiles: Profile[];
+  selectedProfileId: string | null;
+  onProfileSelect: (id: string) => void;
   onImportClick: () => void;
   onSettingsClick: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   profiles,
+  selectedProfileId,
+  onProfileSelect,
   onImportClick,
   onSettingsClick,
 }) => {
@@ -45,7 +49,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         ) : (
           <ul className="profile-list">
             {profiles.map((profile) => (
-              <li key={profile.id} className="profile-item">
+              <li 
+                key={profile.id} 
+                className={`profile-item ${profile.id === selectedProfileId ? "active" : ""}`}
+                onClick={() => onProfileSelect(profile.id)}
+              >
                 <span className={`status-indicator ${profile.status}`} />
                 <span className="profile-name">{profile.name}</span>
                 <span className="profile-port">:{profile.port}</span>
