@@ -329,10 +329,18 @@ struct LocalIpCache {
     fetched_at: std::time::Instant,
 }
 
+#[derive(Clone, Default)]
+pub struct WorkerStartupCount {
+    pub encryption: usize,
+    pub decryption: usize,
+    pub handshake: usize,
+}
+
 pub struct ProcessManager {
     processes: Mutex<HashMap<String, Child>>,
     local_ip_cache: Mutex<Option<LocalIpCache>>,
     logs: Mutex<HashMap<String, VecDeque<LogEntry>>>,
+    worker_counts: Mutex<HashMap<String, WorkerStartupCount>>,
 }
 
 fn classify_stderr_line(line: &str) -> &'static str {
@@ -370,18 +378,85 @@ fn strip_wireproxy_prefix(line: &str) -> &str {
     line
 }
 
+enum WorkerType {
+    Encryption,
+    Decryption,
+    Handshake,
+}
+
+fn parse_worker_log(message: &str) -> Option<WorkerType> {
+    if !message.starts_with("Routine: ") || !message.ends_with(" - started") {
+        return None;
+    }
+    
+    if message.contains(" encryption worker ") {
+        Some(WorkerType::Encryption)
+    } else if message.contains(" decryption worker ") {
+        Some(WorkerType::Decryption)
+    } else if message.contains(" handshake worker ") {
+        Some(WorkerType::Handshake)
+    } else {
+        None
+    }
+}
+
 fn append_log(state: &ProcessManager, profile_id: &str, level: &str, message: &str) {
-    let mut logs = state.logs.lock().unwrap();
-    let entries = logs.entry(profile_id.to_string()).or_insert_with(VecDeque::new);
-    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let clean_message = strip_wireproxy_prefix(message);
-    entries.push_back(LogEntry {
-        timestamp,
-        level: level.to_string(),
-        message: clean_message.to_string(),
-    });
-    if entries.len() > 1000 {
-        entries.pop_front();
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    if let Some(worker_type) = parse_worker_log(clean_message) {
+        let mut counts_map = state.worker_counts.lock().unwrap();
+        let counts = counts_map.entry(profile_id.to_string()).or_default();
+        match worker_type {
+            WorkerType::Encryption => counts.encryption += 1,
+            WorkerType::Decryption => counts.decryption += 1,
+            WorkerType::Handshake => counts.handshake += 1,
+        }
+        let aggregated_msg = format!(
+            "WireGuard workers initialized: {} encryption, {} decryption, {} handshake",
+            counts.encryption, counts.decryption, counts.handshake
+        );
+        drop(counts_map);
+
+        let mut logs = state.logs.lock().unwrap();
+        let entries = logs.entry(profile_id.to_string()).or_default();
+        
+        let mut found_idx = None;
+        let len = entries.len();
+        let lookback = if len > 10 { 10 } else { len };
+        for i in 0..lookback {
+            let idx = len - 1 - i;
+            if entries[idx].message.starts_with("WireGuard workers initialized:") {
+                found_idx = Some(idx);
+                break;
+            }
+        }
+        
+        if let Some(idx) = found_idx {
+            entries[idx].message = aggregated_msg;
+            entries[idx].timestamp = timestamp;
+            entries[idx].level = "DEBUG".to_string();
+        } else {
+            entries.push_back(LogEntry {
+                timestamp,
+                level: "DEBUG".to_string(),
+                message: aggregated_msg,
+            });
+            if entries.len() > 1000 {
+                entries.pop_front();
+            }
+        }
+    } else {
+        let mut logs = state.logs.lock().unwrap();
+        let entries = logs.entry(profile_id.to_string()).or_default();
+        entries.push_back(LogEntry {
+            timestamp,
+            level: level.to_string(),
+            message: clean_message.to_string(),
+        });
+        if entries.len() > 1000 {
+            entries.pop_front();
+        }
     }
 }
 
@@ -483,6 +558,12 @@ fn start_wireproxy(
     port: u16,
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<(), String> {
+    // Clear worker counts for this profile
+    {
+        let mut counts = state.worker_counts.lock().unwrap();
+        counts.insert(profile_id.clone(), WorkerStartupCount::default());
+    }
+
     append_log(&state, &profile_id, "INFO", "Starting WireProxy");
 
     // 1. Resolve binary path
@@ -921,6 +1002,7 @@ pub fn run() {
             processes: Mutex::new(HashMap::new()),
             local_ip_cache: Mutex::new(None),
             logs: Mutex::new(HashMap::new()),
+            worker_counts: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             pick_parse_and_validate_file,

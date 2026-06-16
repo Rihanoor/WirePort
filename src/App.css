@@ -178,12 +178,13 @@
 
 /* Header Styles */
 .app-header {
-  height: 64px;
-  padding: 0 32px;
+  padding: 16px 32px;
   border-bottom: 1px solid var(--border);
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 12px;
   background-color: rgba(15, 20, 35, 0.4);
   backdrop-filter: blur(12px);
 }
@@ -194,10 +195,16 @@
   letter-spacing: -0.02em;
 }
 
-.header-right {
+.header-top-row {
+  width: 100%;
+}
+
+.header-bottom-row {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
 }
 
 .status-pill {
@@ -208,6 +215,8 @@
   border-radius: 20px;
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .status-pill.disconnected {
@@ -234,6 +243,8 @@
   border: 1px solid var(--border);
   color: var(--text-secondary);
   font-family: var(--font-mono);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* Empty State Styles */
