@@ -5,6 +5,7 @@ import { Header } from "./components/Header";
 import { EmptyState } from "./components/EmptyState";
 import { ProfileDetails } from "./components/ProfileDetails";
 import { Dashboard } from "./components/Dashboard";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { Profile, ProfileStatus } from "./types";
 import { CheckCircle2, AlertCircle } from "lucide-react";
 import "./App.css";
@@ -246,6 +247,8 @@ function App() {
           </div>
         ) : profiles.length === 0 ? (
           <EmptyState onImportClick={handleImportProfile} />
+        ) : selectedProfileId === "settings" ? (
+          <SettingsPanel showToast={showToast} />
         ) : selectedProfile ? (
           <ProfileDetails
             profile={selectedProfile}

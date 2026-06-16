@@ -315,6 +315,7 @@ fn load_generated_config(
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     wireproxy_binary_path: String,
+    hide_dock_icon: Option<bool>,
 }
 
 #[tauri::command]
@@ -328,6 +329,7 @@ fn load_settings(app_handle: tauri::AppHandle) -> Result<AppSettings, String> {
     if !file_path.exists() {
         return Ok(AppSettings {
             wireproxy_binary_path: String::new(),
+            hide_dock_icon: Some(false),
         });
     }
 
@@ -335,6 +337,39 @@ fn load_settings(app_handle: tauri::AppHandle) -> Result<AppSettings, String> {
         .map_err(|e| format!("Failed to read settings: {}", e))?;
 
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse settings: {}", e))
+}
+
+#[tauri::command]
+fn save_settings(app_handle: tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+
+    let file_path = app_dir.join("settings.json");
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create settings directory: {}", e))?;
+    }
+
+    let content = serde_json::to_string(&settings)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+
+    std::fs::write(&file_path, content)
+        .map_err(|e| format!("Failed to write settings: {}", e))?;
+
+    // Dynamically toggle activation policy on macOS
+    #[cfg(target_os = "macos")]
+    {
+        let hide = settings.hide_dock_icon.unwrap_or(false);
+        let policy = if hide {
+            tauri::ActivationPolicy::Accessory
+        } else {
+            tauri::ActivationPolicy::Regular
+        };
+        let _ = app_handle.set_activation_policy(policy);
+    }
+
+    Ok(())
 }
 
 use std::collections::{HashMap, VecDeque};
@@ -1459,11 +1494,11 @@ fn update_tray_menu(app: &tauri::AppHandle, status: &str) -> Result<(), String> 
 
         let is_connected = status.contains("Connected");
         let status_label = if status.contains("Connected") {
-            "● Connected"
+            "🟢 Connected"
         } else if status.contains("Error") {
-            "● Error"
+            "🟡 Error"
         } else {
-            "● Disconnected"
+            "🔴 Disconnected"
         };
 
         let active_id = {
@@ -1492,12 +1527,12 @@ fn update_tray_menu(app: &tauri::AppHandle, status: &str) -> Result<(), String> 
         };
 
         let title_i = tauri::menu::MenuItemBuilder::with_id("title", "WirePort")
-            .enabled(false)
+            .enabled(true)
             .build(app)
             .map_err(|e| e.to_string())?;
 
         let status_i = tauri::menu::MenuItemBuilder::with_id("status", status_label)
-            .enabled(false)
+            .enabled(true)
             .build(app)
             .map_err(|e| e.to_string())?;
 
@@ -1505,13 +1540,13 @@ fn update_tray_menu(app: &tauri::AppHandle, status: &str) -> Result<(), String> 
             "profile",
             format!("Current Profile: {}", profile_name),
         )
-        .enabled(false)
+        .enabled(true)
         .build(app)
         .map_err(|e| e.to_string())?;
 
         let proxy_i =
             tauri::menu::MenuItemBuilder::with_id("proxy", format!("Proxy: {}", proxy_url))
-                .enabled(false)
+                .enabled(true)
                 .build(app)
                 .map_err(|e| e.to_string())?;
 
@@ -1684,6 +1719,7 @@ fn connect_current_profile(app_handle: &tauri::AppHandle) -> Result<(), String> 
     // Get settings
     let settings = load_settings(app_handle.clone()).unwrap_or(AppSettings {
         wireproxy_binary_path: String::new(),
+        hide_dock_icon: Some(false),
     });
 
     let config_path = app_dir
@@ -1749,6 +1785,7 @@ pub fn run() {
             generate_wireproxy_config,
             load_generated_config,
             load_settings,
+            save_settings,
             start_wireproxy,
             stop_wireproxy,
             get_profile_status,
@@ -1765,6 +1802,7 @@ pub fn run() {
 
             let _tray = tauri::tray::TrayIconBuilder::with_id("main")
                 .icon(icon)
+                .icon_as_template(true)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "quit" => {
                         quit_app(app);
@@ -1801,6 +1839,16 @@ pub fn run() {
 
             let handle = app.handle();
             let _ = update_tray_menu(handle, "Disconnected");
+
+            // Apply activation policy on startup for macOS if hide_dock_icon is enabled
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(settings) = load_settings(handle.clone()) {
+                    if settings.hide_dock_icon.unwrap_or(false) {
+                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    }
+                }
+            }
 
             // Restore window state from window-state.json
             if let Some(window) = app.get_webview_window("main") {

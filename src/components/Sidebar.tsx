@@ -1,5 +1,5 @@
 import React from "react";
-import { Plus, Shield, Info } from "lucide-react";
+import { Plus, Shield, Info, Settings } from "lucide-react";
 import { Profile } from "../types";
 
 interface SidebarProps {
@@ -64,6 +64,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
             ))}
           </ul>
         )}
+      </div>
+
+      {/* Sidebar Footer */}
+      <div className="sidebar-footer">
+        <button 
+          className={`settings-sidebar-btn btn btn-full ${selectedProfileId === "settings" ? "active" : ""}`}
+          onClick={() => onProfileSelect("settings")}
+        >
+          <Settings size={16} />
+          <span>App Settings</span>
+        </button>
       </div>
     </aside>
   );
