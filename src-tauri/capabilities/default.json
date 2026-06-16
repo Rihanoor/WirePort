@@ -20,6 +20,7 @@
     "wireport:allow-pick-wireproxy-binary",
     "wireport:allow-start-wireproxy",
     "wireport:allow-stop-wireproxy",
-    "wireport:allow-get-profile-status"
+    "wireport:allow-get-profile-status",
+    "wireport:allow-set-selected-profile"
   ]
 }

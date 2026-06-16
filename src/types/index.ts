@@ -16,6 +16,7 @@ export interface Profile {
   status: ProfileStatus;
   createdAt: string;
   updatedAt: string;
+  lastConnectedAt?: string;
 }
 
 export interface AppSettings {
@@ -43,6 +44,17 @@ export interface LogEntry {
   timestamp: string;
   level: string;
   message: string;
+}
+
+export interface ProxyStats {
+  status: string;
+  uploadedBytesTotal: number;
+  downloadedBytesTotal: number;
+  uploadSpeedBytesPerSec: number;
+  downloadSpeedBytesPerSec: number;
+  lastHandshake: string;
+  lastHandshakeAgeSecs: number | null;
+  connectedForSecs: number;
 }
 
 

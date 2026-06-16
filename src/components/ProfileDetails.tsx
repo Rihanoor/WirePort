@@ -2,10 +2,12 @@ import React, { useState, useEffect } from "react";
 import { 
   Shield, Globe, Calendar, Copy, Check, Eye, EyeOff, 
   FileText, ArrowUpRight, CheckCircle2, XCircle, AlertCircle, HelpCircle, FileCode,
-  Activity, RefreshCw, Clock, Download, Trash2, Terminal, ChevronRight
+  Activity, RefreshCw, Clock, Download, Trash2, Terminal, ChevronRight,
+  ArrowDown, ArrowUp
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { Profile, ProxyType, ProfileStatus, GeneratedConfigMeta, ConnectionHealthResult, LogEntry } from "../types";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Profile, ProxyType, ProfileStatus, GeneratedConfigMeta, ConnectionHealthResult, LogEntry, ProxyStats } from "../types";
 
 
 interface ProfileDetailsProps {
@@ -14,6 +16,7 @@ interface ProfileDetailsProps {
   onDelete?: (id: string) => void;
   wireproxyBinaryPath: string;
   onStatusChange: (status: ProfileStatus) => void;
+  showToast: (message: string, type?: "success" | "error") => void;
 }
 
 export const ProfileDetails: React.FC<ProfileDetailsProps> = ({ 
@@ -21,7 +24,8 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   onUpdate,
   onDelete,
   wireproxyBinaryPath,
-  onStatusChange
+  onStatusChange,
+  showToast
 }) => {
   const [name, setName] = useState(profile.name);
   const [proxyType, setProxyType] = useState<ProxyType>(profile.proxyType);
@@ -43,6 +47,9 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   // Connection Health State
   const [health, setHealth] = useState<ConnectionHealthResult | null>(null);
   const [lastSuccessHealth, setLastSuccessHealth] = useState<ConnectionHealthResult | null>(null);
+  
+  // Traffic Statistics State
+  const [stats, setStats] = useState<ProxyStats | null>(null);
   const [isCheckingHealth, setIsCheckingHealth] = useState(false);
   const [lastCheckedTime, setLastCheckedTime] = useState<string | null>(null);
   const [autoCheck, setAutoCheck] = useState<boolean>(() => {
@@ -205,6 +212,8 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     localStorage.setItem("autoCheckHealth", autoCheck.toString());
   }, [autoCheck]);
 
+
+
   // Function to run a health check
   const checkConnection = async (force: boolean = false) => {
     if (isCheckingHealth || (profile.status !== "running" && !force)) return;
@@ -220,13 +229,14 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
       }
     } catch (err: any) {
       console.error("Connection health check failed:", err);
+      const errMsg = err.toString() || "Unknown error";
       const errResult: ConnectionHealthResult = {
         success: false,
         tunnelActive: false,
         exitIp: "",
         localIp: "",
         latencyMs: 0,
-        error: err.toString() || "Unknown error",
+        error: errMsg,
       };
       setHealth(errResult);
       setLastCheckedTime(new Date().toLocaleTimeString());
@@ -238,10 +248,13 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   // Trigger health check on status change or auto-check interval
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | null = null;
+    let initialTimeout: ReturnType<typeof setTimeout> | null = null;
     
     if (profile.status === "running") {
-      // Trigger check immediately when status becomes running
-      checkConnection();
+      // Trigger check after a 3-second grace period to let the connection stabilize
+      initialTimeout = setTimeout(() => {
+        checkConnection();
+      }, 3000);
       
       if (autoCheck) {
         interval = setInterval(() => {
@@ -256,6 +269,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     }
     
     return () => {
+      if (initialTimeout) clearTimeout(initialTimeout);
       if (interval) clearInterval(interval);
     };
   }, [profile.status, profile.id, autoCheck]);
@@ -300,6 +314,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     navigator.clipboard.writeText(endpointStr);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+    showToast(`Copied proxy URL: ${endpointStr}`, "success");
   };
 
   const maskPrivateKey = (content: string, mask: boolean): string => {
@@ -428,6 +443,123 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
       configStatus = "ready";
     }
   }
+
+  // Poll stats every 2 seconds while running
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null;
+    
+    const fetchStats = async () => {
+      try {
+        const res = await invoke<ProxyStats>("get_proxy_stats", {
+          profileId: profile.id,
+        });
+        setStats(res);
+      } catch (err) {
+        console.error("Failed to fetch proxy stats:", err);
+      }
+    };
+
+    if (profile.status === "running") {
+      fetchStats(); // Fetch immediately
+      interval = setInterval(fetchStats, 2000);
+    } else {
+      setStats(null);
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [profile.status, profile.id]);
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  };
+
+  const formatSpeed = (bytesPerSec: number): string => {
+    if (bytesPerSec === 0) return "0 KB/s";
+    const k = 1024;
+    const sizes = ["B/s", "KB/s", "MB/s", "GB/s"];
+    const i = Math.floor(Math.log(bytesPerSec) / Math.log(k));
+    return parseFloat((bytesPerSec / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+  };
+
+  const formatDuration = (totalSeconds: number): string => {
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    if (h > 0) {
+      return `${h}h ${m}m ${s}s`;
+    }
+    if (m > 0) {
+      return `${m}m ${s}s`;
+    }
+    return `${s}s`;
+  };
+
+  const formatConnectedDuration = (totalSeconds: number): string => {
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    if (h > 0) {
+      return `${h}h ${m}m`;
+    }
+    if (m > 0) {
+      return `${m}m`;
+    }
+    return `${s}s`;
+  };
+
+  const formatTime = (date: Date): string => {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const getConnectedSinceText = (): string => {
+    if (stats && stats.connectedForSecs > 0) {
+      return formatTime(new Date(Date.now() - stats.connectedForSecs * 1000));
+    }
+    if (profile.lastConnectedAt) {
+      return formatTime(new Date(profile.lastConnectedAt));
+    }
+    return "--";
+  };
+
+  const getConnectedForText = (): string => {
+    if (stats && stats.connectedForSecs > 0) {
+      return formatConnectedDuration(stats.connectedForSecs);
+    }
+    if (profile.lastConnectedAt) {
+      const elapsed = Math.floor((Date.now() - new Date(profile.lastConnectedAt).getTime()) / 1000);
+      if (elapsed > 0) {
+        return formatConnectedDuration(elapsed);
+      }
+    }
+    return "--";
+  };
+
+  const handleTestIpLeak = async () => {
+    try {
+      await openUrl("https://ipleak.net");
+    } catch (err: any) {
+      console.error("Failed to open IPLeak.net:", err);
+      showToast("Failed to open default browser", "error");
+    }
+  };
+
+  const formatHandshakeAge = (ageSecs: number | null): string => {
+    if (ageSecs === null) return "Never";
+    if (ageSecs < 1) return "Just now";
+    if (ageSecs < 60) return `${ageSecs}s ago`;
+    const m = Math.floor(ageSecs / 60);
+    const s = ageSecs % 60;
+    if (m < 60) return `${m}m ${s}s ago`;
+    const h = Math.floor(m / 60);
+    const mRemaining = m % 60;
+    return `${h}h ${mRemaining}m ago`;
+  };
 
   const isOutOfSync = configStatus !== "ready";
 
@@ -579,7 +711,17 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                 </div>
 
                 <div className="health-metric">
-                  {/* Empty block to balance 2-column grid row */}
+                  <span className="metric-label">Connected Since</span>
+                  <div className="metric-value font-mono">
+                    {getConnectedSinceText()}
+                  </div>
+                </div>
+
+                <div className="health-metric">
+                  <span className="metric-label">Connected For</span>
+                  <div className="metric-value font-mono">
+                    {getConnectedForText()}
+                  </div>
                 </div>
 
                 <div className="health-metric span-2">
@@ -593,6 +735,65 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                       "None"
                     )}
                   </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Traffic Statistics Card */}
+        {profile.status === "running" && stats && (
+          <div className="details-section">
+            <h3 className="section-title">Traffic Statistics</h3>
+            <div className="stats-card">
+              <div className="stats-grid">
+                <div className="stats-metric">
+                  <span className="metric-label">
+                    <ArrowDown size={12} className="stats-label-icon download" /> Download Speed
+                  </span>
+                  <span className="metric-value font-mono">
+                    {formatSpeed(stats.downloadSpeedBytesPerSec)}
+                  </span>
+                </div>
+                <div className="stats-metric">
+                  <span className="metric-label">
+                    <ArrowUp size={12} className="stats-label-icon upload" /> Upload Speed
+                  </span>
+                  <span className="metric-value font-mono">
+                    {formatSpeed(stats.uploadSpeedBytesPerSec)}
+                  </span>
+                </div>
+                <div className="stats-metric">
+                  <span className="metric-label">
+                    <ArrowDown size={12} className="stats-label-icon download" /> Downloaded
+                  </span>
+                  <span className="metric-value font-mono">
+                    {formatBytes(stats.downloadedBytesTotal)}
+                  </span>
+                </div>
+                <div className="stats-metric">
+                  <span className="metric-label">
+                    <ArrowUp size={12} className="stats-label-icon upload" /> Uploaded
+                  </span>
+                  <span className="metric-value font-mono">
+                    {formatBytes(stats.uploadedBytesTotal)}
+                  </span>
+                </div>
+                <div className="stats-metric">
+                  <span className="metric-label">
+                    <Clock size={12} className="stats-label-icon duration" /> Connected For
+                  </span>
+                  <span className="metric-value font-mono">
+                    {formatDuration(stats.connectedForSecs)}
+                  </span>
+                </div>
+                <div className="stats-metric">
+                  <span className="metric-label">
+                    <Activity size={12} className="stats-label-icon handshake" /> Last Handshake
+                  </span>
+                  <span className="metric-value font-mono">
+                    {formatHandshakeAge(stats.lastHandshakeAgeSecs)}
+                  </span>
                 </div>
               </div>
             </div>
@@ -651,6 +852,29 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                   aria-label="Copy Endpoint"
                 >
                   {copied ? <Check size={16} className="text-success" /> : <Copy size={16} />}
+                </button>
+              </div>
+            </div>
+
+            <div className="form-group span-2 mt-1">
+              <div className="quick-actions-row">
+                <button
+                  type="button"
+                  className="quick-action-btn"
+                  onClick={handleCopyEndpoint}
+                  title="Copy Proxy URL"
+                >
+                  <Copy size={14} />
+                  <span>Copy Proxy URL</span>
+                </button>
+                <button
+                  type="button"
+                  className="quick-action-btn"
+                  onClick={handleTestIpLeak}
+                  title="Test connection on IPLeak.net"
+                >
+                  <ArrowUpRight size={14} />
+                  <span>Test on IPLeak.net</span>
                 </button>
               </div>
             </div>

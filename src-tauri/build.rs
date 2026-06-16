@@ -15,6 +15,7 @@ fn main() {
                     "start_wireproxy",
                     "stop_wireproxy",
                     "get_profile_status",
+                    "set_selected_profile",
                 ]),
             ),
     )

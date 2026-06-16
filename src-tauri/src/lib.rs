@@ -1,4 +1,54 @@
 use tauri::Manager;
+use tauri_plugin_notification::NotificationExt;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static TRAY_NOTIFIED: AtomicBool = AtomicBool::new(false);
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct WindowState {
+    width: f64,
+    height: f64,
+    x: i32,
+    y: i32,
+}
+
+fn save_window_state(window: &tauri::Window) {
+    if let (Ok(is_minimized), Ok(is_maximized)) = (window.is_minimized(), window.is_maximized()) {
+        if is_minimized || is_maximized {
+            return;
+        }
+    }
+    
+    if let (Ok(physical_size), Ok(physical_pos), Ok(scale_factor)) = (
+        window.outer_size(),
+        window.outer_position(),
+        window.scale_factor(),
+    ) {
+        let logical_size = physical_size.to_logical::<f64>(scale_factor);
+        let logical_pos = physical_pos.to_logical::<f64>(scale_factor);
+        
+        // Basic sanity check to avoid invalid coordinates or zero/negative size
+        if logical_size.width <= 100.0 || logical_size.height <= 100.0 {
+            return;
+        }
+
+        let state = WindowState {
+            width: logical_size.width,
+            height: logical_size.height,
+            x: logical_pos.x.round() as i32,
+            y: logical_pos.y.round() as i32,
+        };
+
+        if let Ok(app_dir) = window.app_handle().path().app_data_dir() {
+            let file_path = app_dir.join("window-state.json");
+            // Ensure directory exists
+            let _ = std::fs::create_dir_all(&app_dir);
+            if let Ok(json) = serde_json::to_string(&state) {
+                let _ = std::fs::write(file_path, json);
+            }
+        }
+    }
+}
 
 #[derive(serde::Serialize)]
 struct ParseResult {
@@ -312,7 +362,7 @@ fn pick_wireproxy_binary() -> Result<Option<String>, String> {
 }
 
 use std::collections::{HashMap, VecDeque};
-use std::process::Child;
+
 use std::sync::Mutex;
 use std::io::BufRead;
 
@@ -336,11 +386,39 @@ pub struct WorkerStartupCount {
     pub handshake: usize,
 }
 
+struct RunningProcess {
+    child: std::process::Child,
+    proxy_port: u16,
+    info_port: u16,
+    started_at: std::time::Instant,
+}
+
+struct StatsCacheEntry {
+    last_tx_bytes: u64,
+    last_rx_bytes: u64,
+    last_polled_at: std::time::Instant,
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyStats {
+    pub status: String,
+    pub uploaded_bytes_total: u64,
+    pub downloaded_bytes_total: u64,
+    pub upload_speed_bytes_per_sec: u64,
+    pub download_speed_bytes_per_sec: u64,
+    pub last_handshake: String,
+    pub last_handshake_age_secs: Option<u64>,
+    pub connected_for_secs: u64,
+}
+
 pub struct ProcessManager {
-    processes: Mutex<HashMap<String, Child>>,
+    processes: Mutex<HashMap<String, RunningProcess>>,
+    stats_cache: Mutex<HashMap<String, StatsCacheEntry>>,
     local_ip_cache: Mutex<Option<LocalIpCache>>,
     logs: Mutex<HashMap<String, VecDeque<LogEntry>>>,
     worker_counts: Mutex<HashMap<String, WorkerStartupCount>>,
+    selected_profile_id: Mutex<Option<String>>,
 }
 
 fn classify_stderr_line(line: &str) -> &'static str {
@@ -462,13 +540,31 @@ fn append_log(state: &ProcessManager, profile_id: &str, level: &str, message: &s
 
 fn handle_unexpected_exit(app_handle: &tauri::AppHandle, profile_id: &str) {
     let state = app_handle.state::<ProcessManager>();
+    
+    // Check if the process is actually dead before removing it from the map
+    let is_dead = {
+        let mut map = state.processes.lock().unwrap();
+        if let Some(proc) = map.get_mut(profile_id) {
+            match proc.child.try_wait() {
+                Ok(None) => false, // Still running!
+                _ => true, // Dead or error
+            }
+        } else {
+            false
+        }
+    };
+
+    if !is_dead {
+        return;
+    }
+
     let child_opt = {
         let mut map = state.processes.lock().unwrap();
         map.remove(profile_id)
     };
     
-    if let Some(mut child) = child_opt {
-        let status = child.wait();
+    if let Some(mut proc) = child_opt {
+        let status = proc.child.wait();
         append_log(&state, profile_id, "INFO", "WireProxy process stopped");
         append_log(&state, profile_id, "ERROR", "Process exited unexpectedly");
         let exit_code_str = match status {
@@ -479,6 +575,7 @@ fn handle_unexpected_exit(app_handle: &tauri::AppHandle, profile_id: &str) {
             Err(_) => "unknown".to_string(),
         };
         append_log(&state, profile_id, "ERROR", &format!("WireProxy exited unexpectedly (exit code: {})", exit_code_str));
+        let _ = update_tray_menu(app_handle, "🔴 Error");
     }
 }
 
@@ -549,6 +646,13 @@ fn get_bundled_sidecar_path(app_handle: &tauri::AppHandle) -> Result<std::path::
     Err("Could not find bundled WireProxy sidecar binary".to_string())
 }
 
+fn find_free_port() -> Option<u16> {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .ok()
+        .and_then(|l| l.local_addr().ok())
+        .map(|addr| addr.port())
+}
+
 #[tauri::command]
 fn start_wireproxy(
     app_handle: tauri::AppHandle,
@@ -562,6 +666,12 @@ fn start_wireproxy(
     {
         let mut counts = state.worker_counts.lock().unwrap();
         counts.insert(profile_id.clone(), WorkerStartupCount::default());
+    }
+
+    // Clear stats cache entry when starting
+    {
+        let mut stats_map = state.stats_cache.lock().unwrap();
+        stats_map.remove(&profile_id);
     }
 
     append_log(&state, &profile_id, "INFO", "Starting WireProxy");
@@ -614,8 +724,8 @@ fn start_wireproxy(
     
     // Clean up dead processes first
     let mut dead_keys = Vec::new();
-    for (k, child) in map.iter_mut() {
-        if child.try_wait().map(|status| status.is_some()).unwrap_or(true) {
+    for (k, proc) in map.iter_mut() {
+        if proc.child.try_wait().map(|status| status.is_some()).unwrap_or(true) {
             dead_keys.push(k.clone());
         }
     }
@@ -635,10 +745,24 @@ fn start_wireproxy(
         return Err(err_msg);
     }
 
+    // Allocate dynamic info port
+    let info_port = match find_free_port() {
+        Some(p) => p,
+        None => {
+            let err_msg = "Failed to allocate dynamic info port".to_string();
+            append_log(&state, &profile_id, "ERROR", &err_msg);
+            append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
+            append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+            return Err(err_msg);
+        }
+    };
+
     // 5. Spawn the child process
     let mut child = match std::process::Command::new(&bin_path)
         .arg("-c")
         .arg(&config_path)
+        .arg("-i")
+        .arg(format!("127.0.0.1:{}", info_port))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn() {
@@ -659,12 +783,19 @@ fn start_wireproxy(
         Ok(None) => {
             // Still running! Success.
             append_log(&state, &profile_id, "INFO", "WireProxy process started");
+            let _ = update_last_connected_at(&app_handle, &profile_id);
+            let _ = update_tray_menu(&app_handle, "🟢 Connected");
 
             let mut child_to_insert = child;
             let stdout = child_to_insert.stdout.take();
             let stderr = child_to_insert.stderr.take();
 
-            map.insert(profile_id.clone(), child_to_insert);
+            map.insert(profile_id.clone(), RunningProcess {
+                child: child_to_insert,
+                proxy_port: port,
+                info_port,
+                started_at: std::time::Instant::now(),
+            });
             drop(map);
 
             if let Some(stdout_pipe) = stdout {
@@ -730,6 +861,7 @@ fn start_wireproxy(
             append_log(&state, &profile_id, "ERROR", &format!("WireProxy exited unexpectedly (exit code: {})", exit_code_str));
 
             let stderr_msg = stderr_content.trim();
+            let _ = update_tray_menu(&app_handle, "🔴 Error");
             if stderr_msg.is_empty() {
                 Err(format!("WireProxy exited immediately with status: {}", status))
             } else {
@@ -741,6 +873,7 @@ fn start_wireproxy(
             append_log(&state, &profile_id, "ERROR", &err_msg);
             append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
             append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+            let _ = update_tray_menu(&app_handle, "🔴 Error");
             Err(err_msg)
         }
     }
@@ -748,18 +881,25 @@ fn start_wireproxy(
 
 #[tauri::command]
 fn stop_wireproxy(
+    app_handle: tauri::AppHandle,
     profile_id: String,
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<(), String> {
-    let child_opt = {
+    let proc_opt = {
         let mut map = state.processes.lock().unwrap();
+        // Clear stats cache when stopping
+        {
+            let mut stats_map = state.stats_cache.lock().unwrap();
+            stats_map.remove(&profile_id);
+        }
         map.remove(&profile_id)
     };
 
-    if let Some(mut child) = child_opt {
-        let _ = child.kill();
-        let _ = child.wait();
+    if let Some(mut proc) = proc_opt {
+        let _ = proc.child.kill();
+        let _ = proc.child.wait();
         append_log(&state, &profile_id, "INFO", "WireProxy process stopped");
+        let _ = update_tray_menu(&app_handle, "🔴 Disconnected");
     }
     Ok(())
 }
@@ -770,8 +910,8 @@ fn get_profile_status(
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<String, String> {
     let mut map = state.processes.lock().unwrap();
-    if let Some(child) = map.get_mut(&profile_id) {
-        match child.try_wait() {
+    if let Some(proc) = map.get_mut(&profile_id) {
+        match proc.child.try_wait() {
             Ok(None) => Ok("running".to_string()),
             Ok(Some(status)) => {
                 if status.success() {
@@ -786,6 +926,171 @@ fn get_profile_status(
         Ok("stopped".to_string())
     }
 }
+
+#[tauri::command]
+async fn get_proxy_stats(
+    profile_id: String,
+    state: tauri::State<'_, ProcessManager>,
+) -> Result<ProxyStats, String> {
+    let (info_port, started_at) = {
+        let mut map = state.processes.lock().unwrap();
+        let proc = match map.get_mut(&profile_id) {
+            Some(p) => p,
+            None => {
+                return Ok(ProxyStats {
+                    status: "stopped".to_string(),
+                    uploaded_bytes_total: 0,
+                    downloaded_bytes_total: 0,
+                    upload_speed_bytes_per_sec: 0,
+                    download_speed_bytes_per_sec: 0,
+                    last_handshake: "Never".to_string(),
+                    last_handshake_age_secs: None,
+                    connected_for_secs: 0,
+                });
+            }
+        };
+
+        // Check if child is running
+        let is_running = match proc.child.try_wait() {
+            Ok(None) => true,
+            _ => false,
+        };
+
+        if !is_running {
+            let status = match proc.child.try_wait() {
+                Ok(Some(status)) if status.success() => "stopped".to_string(),
+                _ => "error".to_string(),
+            };
+            return Ok(ProxyStats {
+                status,
+                uploaded_bytes_total: 0,
+                downloaded_bytes_total: 0,
+                upload_speed_bytes_per_sec: 0,
+                download_speed_bytes_per_sec: 0,
+                last_handshake: "Never".to_string(),
+                last_handshake_age_secs: None,
+                connected_for_secs: 0,
+            });
+        }
+
+        (proc.info_port, proc.started_at)
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build() {
+            Ok(c) => c,
+            Err(e) => return Err(format!("Failed to build reqwest client: {}", e)),
+        };
+
+    let url = format!("http://127.0.0.1:{}/metrics", info_port);
+    let response = client.get(&url).send().await;
+
+    let body = match response {
+        Ok(res) => {
+            if res.status().is_success() {
+                res.text().await.unwrap_or_default()
+            } else {
+                String::new()
+            }
+        }
+        Err(_) => String::new(),
+    };
+
+    // Parse the metrics body
+    let mut tx_bytes = 0;
+    let mut rx_bytes = 0;
+    let mut last_handshake_sec = 0;
+    let mut last_handshake_nsec = 0;
+
+    for line in body.lines() {
+        if let Some(eq_idx) = line.find('=') {
+            let key = line[..eq_idx].trim();
+            let val = line[eq_idx + 1..].trim();
+            match key {
+                "tx_bytes" => tx_bytes = val.parse().unwrap_or(0),
+                "rx_bytes" => rx_bytes = val.parse().unwrap_or(0),
+                "last_handshake_time_sec" => last_handshake_sec = val.parse().unwrap_or(0),
+                "last_handshake_time_nsec" => last_handshake_nsec = val.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+
+    let now = std::time::Instant::now();
+
+    // Re-lock to check cache and compute rate
+    let mut stats_map = state.stats_cache.lock().unwrap();
+    let cache_entry = stats_map.get_mut(&profile_id);
+
+    let (upload_speed, download_speed) = match cache_entry {
+        Some(entry) => {
+            let time_delta = now.duration_since(entry.last_polled_at).as_secs_f64();
+            let up = if time_delta > 0.0 && tx_bytes >= entry.last_tx_bytes {
+                let diff = tx_bytes - entry.last_tx_bytes;
+                (diff as f64 / time_delta) as u64
+            } else {
+                0
+            };
+            let down = if time_delta > 0.0 && rx_bytes >= entry.last_rx_bytes {
+                let diff = rx_bytes - entry.last_rx_bytes;
+                (diff as f64 / time_delta) as u64
+            } else {
+                0
+            };
+
+            entry.last_tx_bytes = tx_bytes;
+            entry.last_rx_bytes = rx_bytes;
+            entry.last_polled_at = now;
+
+            (up, down)
+        }
+        None => {
+            // First stats poll: create cache and return speed = 0
+            stats_map.insert(profile_id.clone(), StatsCacheEntry {
+                last_tx_bytes: tx_bytes,
+                last_rx_bytes: rx_bytes,
+                last_polled_at: now,
+            });
+            (0, 0)
+        }
+    };
+
+    let last_handshake = if last_handshake_sec == 0 {
+        "Never".to_string()
+    } else {
+        if let Some(dt) = chrono::DateTime::from_timestamp(last_handshake_sec, last_handshake_nsec as u32) {
+            dt.to_rfc3339()
+        } else {
+            "Never".to_string()
+        }
+    };
+
+    let last_handshake_age_secs = if last_handshake_sec == 0 {
+        None
+    } else {
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Some(now_unix.saturating_sub(last_handshake_sec as u64))
+    };
+
+    let connected_for_secs = started_at.elapsed().as_secs();
+
+    Ok(ProxyStats {
+        status: "running".to_string(),
+        uploaded_bytes_total: tx_bytes,
+        downloaded_bytes_total: rx_bytes,
+        upload_speed_bytes_per_sec: upload_speed,
+        download_speed_bytes_per_sec: download_speed,
+        last_handshake,
+        last_handshake_age_secs,
+        connected_for_secs,
+    })
+}
+
+
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -955,6 +1260,12 @@ async fn test_proxy_connection(
                                 // True tunnel verification logic
                                 let tunnel_active = !exit_ip.is_empty() && !local_ip.is_empty() && exit_ip != local_ip;
 
+                                 if tunnel_active {
+                                     let _ = update_tray_menu(&app_handle, "🟢 Connected");
+                                 } else {
+                                    let _ = update_tray_menu(&app_handle, "🔴 Error");
+                                }
+
                                 return Ok(ConnectionHealthResult {
                                     success: true,
                                     tunnel_active,
@@ -980,6 +1291,7 @@ async fn test_proxy_connection(
     }
 
     // If all providers failed
+    let _ = update_tray_menu(&app_handle, "🔴 Error");
     Ok(ConnectionHealthResult {
         success: false,
         tunnel_active: false,
@@ -994,15 +1306,184 @@ async fn test_proxy_connection(
     })
 }
 
+fn update_tray_menu(app: &tauri::AppHandle, state_label: &str) -> Result<(), String> {
+    if let Some(tray) = app.tray_by_id("main") {
+        let is_connected = state_label.contains("Connected");
+        let state_i = tauri::menu::MenuItemBuilder::with_id("status", state_label)
+            .enabled(is_connected)
+            .build(app)
+            .map_err(|e| e.to_string())?;
+        let open_i = tauri::menu::MenuItemBuilder::with_id("open", "Open WirePort")
+            .build(app)
+            .map_err(|e| e.to_string())?;
+        let connect_i = tauri::menu::MenuItemBuilder::with_id("connect", "Connect Current Profile")
+            .build(app)
+            .map_err(|e| e.to_string())?;
+        let disconnect_i = tauri::menu::MenuItemBuilder::with_id("disconnect", "Disconnect Current Profile")
+            .build(app)
+            .map_err(|e| e.to_string())?;
+        let quit_i = tauri::menu::MenuItemBuilder::with_id("quit", "Quit")
+            .build(app)
+            .map_err(|e| e.to_string())?;
+
+        let menu = tauri::menu::Menu::with_items(app, &[&state_i, &open_i, &connect_i, &disconnect_i, &quit_i])
+            .map_err(|e| e.to_string())?;
+
+        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn update_last_connected_at(app_handle: &tauri::AppHandle, profile_id: &str) -> Result<(), String> {
+    let app_dir = app_handle.path().app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let file_path = app_dir.join("profiles.json");
+    if !file_path.exists() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read profiles: {}", e))?;
+    let mut profiles: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse profiles: {}", e))?;
+    
+    if let Some(arr) = profiles.as_array_mut() {
+        let mut found = false;
+        for p in arr.iter_mut() {
+            if p.get("id").and_then(|id| id.as_str()) == Some(profile_id) {
+                let now_str = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                p["lastConnectedAt"] = serde_json::Value::from(now_str);
+                found = true;
+                break;
+            }
+        }
+        if found {
+            let updated_json = serde_json::to_string(&profiles)
+                .map_err(|e| format!("Failed to serialize profiles: {}", e))?;
+            std::fs::write(&file_path, updated_json)
+                .map_err(|e| format!("Failed to write profiles: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
+fn quit_app(app_handle: &tauri::AppHandle) {
+    let state = app_handle.state::<ProcessManager>();
+    let mut map = state.processes.lock().unwrap();
+    for (profile_id, mut proc) in map.drain() {
+        let _ = proc.child.kill();
+        let _ = proc.child.wait();
+        // Clear stats cache
+        let mut stats_map = state.stats_cache.lock().unwrap();
+        stats_map.remove(&profile_id);
+    }
+    app_handle.exit(0);
+}
+
+fn stop_running_profile(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let state = app_handle.state::<ProcessManager>();
+    let running_id = {
+        let map = state.processes.lock().unwrap();
+        map.keys().next().cloned()
+    };
+    if let Some(profile_id) = running_id {
+        stop_wireproxy(app_handle.clone(), profile_id, state)?;
+        let _ = update_tray_menu(app_handle, "🔴 Disconnected");
+    }
+    Ok(())
+}
+
+fn connect_current_profile(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let state = app_handle.state::<ProcessManager>();
+    let selected_id = {
+        let id_lock = state.selected_profile_id.lock().unwrap();
+        id_lock.clone()
+    };
+
+    let profile_id = match selected_id {
+        Some(id) => id,
+        None => {
+            let _ = app_handle.notification().builder()
+                .title("WirePort")
+                .body("No profile selected")
+                .show();
+            return Ok(());
+        }
+    };
+
+    // Load profiles.json
+    let app_dir = app_handle.path().app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let file_path = app_dir.join("profiles.json");
+    if !file_path.exists() {
+        return Err("No profiles found".to_string());
+    }
+    let content = std::fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read profiles: {}", e))?;
+    let profiles: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse profiles: {}", e))?;
+
+    let arr = profiles.as_array().ok_or("Invalid profiles format")?;
+    let profile_obj = arr.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(&profile_id))
+        .ok_or(format!("Profile not found: {}", profile_id))?;
+
+    let port = profile_obj.get("port").and_then(|v| v.as_u64()).ok_or("Port not found in profile")? as u16;
+    
+    // Get settings
+    let settings = load_settings(app_handle.clone()).unwrap_or(AppSettings {
+        wireproxy_binary_path: String::new(),
+    });
+
+    let config_path = app_dir.join("generated").join(format!("{}.conf", profile_id));
+    let config_path_str = config_path.to_string_lossy().to_string();
+
+    // Call start_wireproxy
+    start_wireproxy(
+        app_handle.clone(),
+        profile_id,
+        config_path_str,
+        settings.wireproxy_binary_path,
+        port,
+        state,
+    )?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn set_selected_profile(
+    profile_id: Option<String>,
+    state: tauri::State<'_, ProcessManager>,
+) -> Result<(), String> {
+    let mut selected = state.selected_profile_id.lock().unwrap();
+    *selected = profile_id;
+    Ok(())
+}
+
+#[tauri::command]
+fn show_notification(
+    app_handle: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    let _ = app_handle.notification().builder()
+        .title(title)
+        .body(body)
+        .show();
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(ProcessManager {
             processes: Mutex::new(HashMap::new()),
+            stats_cache: Mutex::new(HashMap::new()),
             local_ip_cache: Mutex::new(None),
             logs: Mutex::new(HashMap::new()),
             worker_counts: Mutex::new(HashMap::new()),
+            selected_profile_id: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             pick_parse_and_validate_file,
@@ -1019,17 +1500,97 @@ pub fn run() {
             test_proxy_connection,
             get_local_public_ip,
             get_profile_logs,
-            clear_profile_logs
+            clear_profile_logs,
+            get_proxy_stats,
+            set_selected_profile,
+            show_notification
         ])
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
-                if let Some(state) = window.try_state::<ProcessManager>() {
-                    let mut map = state.processes.lock().unwrap();
-                    for (_, mut child) in map.drain() {
-                        let _ = child.kill();
-                        let _ = child.wait();
+        .setup(|app| {
+            let state_i = tauri::menu::MenuItemBuilder::with_id("status", "🔴 Disconnected")
+                .enabled(false)
+                .build(app)?;
+            let open_i = tauri::menu::MenuItemBuilder::with_id("open", "Open WirePort").build(app)?;
+            let connect_i = tauri::menu::MenuItemBuilder::with_id("connect", "Connect Current Profile").build(app)?;
+            let disconnect_i = tauri::menu::MenuItemBuilder::with_id("disconnect", "Disconnect Current Profile").build(app)?;
+            let quit_i = tauri::menu::MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+
+            let menu = tauri::menu::Menu::with_items(app, &[&state_i, &open_i, &connect_i, &disconnect_i, &quit_i])?;
+
+            let icon_bytes = include_bytes!("../icons/32x32.png");
+            let icon = tauri::image::Image::from_bytes(icon_bytes)?;
+
+            let _tray = tauri::tray::TrayIconBuilder::with_id("main")
+                .menu(&menu)
+                .icon(icon)
+                .on_menu_event(|app, event| {
+                    match event.id().as_ref() {
+                        "quit" => {
+                            quit_app(app);
+                        }
+                        "open" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "connect" => {
+                            let _ = connect_current_profile(app);
+                        }
+                        "disconnect" => {
+                            let _ = stop_running_profile(app);
+                        }
+                        _ => {}
+                    }
+                })
+                .build(app)?;
+
+            // Restore window state from window-state.json
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(app_dir) = app.path().app_data_dir() {
+                    let file_path = app_dir.join("window-state.json");
+                    if let Ok(content) = std::fs::read_to_string(&file_path) {
+                        if let Ok(state) = serde_json::from_str::<WindowState>(&content) {
+                            if state.width > 100.0 && state.height > 100.0 {
+                                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                                    width: state.width,
+                                    height: state.height,
+                                }));
+                                
+                                if state.x > -10000 && state.x < 10000 && state.y > -10000 && state.y < 10000 {
+                                    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                                        x: state.x as f64,
+                                        y: state.y as f64,
+                                    }));
+                                }
+                            }
+                        }
                     }
                 }
+            }
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+                
+                if !TRAY_NOTIFIED.swap(true, Ordering::Relaxed) {
+                    let _ = window.app_handle().notification().builder()
+                        .title("WirePort")
+                        .body("WirePort is still running in the system tray")
+                        .show();
+                }
+            } else if let tauri::WindowEvent::Destroyed = event {
+                if let Some(state) = window.try_state::<ProcessManager>() {
+                    let mut map = state.processes.lock().unwrap();
+                    for (_, mut proc) in map.drain() {
+                        let _ = proc.child.kill();
+                        let _ = proc.child.wait();
+                    }
+                }
+            } else if matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)) {
+                save_window_state(window);
             }
         })
         .run(tauri::generate_context!())

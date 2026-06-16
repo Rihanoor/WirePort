@@ -5,7 +5,7 @@ import { Profile } from "../types";
 interface SidebarProps {
   profiles: Profile[];
   selectedProfileId: string | null;
-  onProfileSelect: (id: string) => void;
+  onProfileSelect: (id: string | null) => void;
   onImportClick: () => void;
   onSettingsClick: () => void;
 }
@@ -20,13 +20,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <aside className="app-sidebar">
       {/* Brand Header */}
-      <div className="sidebar-brand">
+      <div 
+        className="sidebar-brand" 
+        onClick={() => onProfileSelect(null)}
+        style={{ cursor: "pointer" }}
+        title="Go to Control Center Dashboard"
+      >
         <div className="brand-logo">
           <Shield size={20} className="brand-icon" />
         </div>
         <div className="brand-info">
           <span className="brand-name">WirePort</span>
-          <span className="brand-tag">v0.1.0</span>
+          <span className="brand-tag">control center</span>
         </div>
       </div>
 

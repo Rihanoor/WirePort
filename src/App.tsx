@@ -5,6 +5,7 @@ import { Header } from "./components/Header";
 import { EmptyState } from "./components/EmptyState";
 import { ProfileDetails } from "./components/ProfileDetails";
 import { SettingsModal } from "./components/SettingsModal";
+import { Dashboard } from "./components/Dashboard";
 import { Profile, AppSettings, ProfileStatus } from "./types";
 import { CheckCircle2, AlertCircle } from "lucide-react";
 import "./App.css";
@@ -31,6 +32,11 @@ function App() {
       localStorage.removeItem("lastUsedProfileId");
     }
   };
+
+  useEffect(() => {
+    invoke("set_selected_profile", { profileId: selectedProfileId })
+      .catch((err) => console.error("Failed to sync selected profile with backend:", err));
+  }, [selectedProfileId]);
 
   // Load profiles and settings from local storage on mount
   useEffect(() => {
@@ -209,7 +215,11 @@ function App() {
   };
 
   const handleStatusChange = (profileId: string, status: ProfileStatus) => {
-    setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, status } : p)));
+    setProfiles((prev) => prev.map((p) => (p.id === profileId ? { 
+      ...p, 
+      status,
+      ...(status === "running" ? { lastConnectedAt: new Date().toISOString() } : {})
+    } : p)));
   };
 
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId);
@@ -230,6 +240,8 @@ function App() {
           <div className="loading-container">
             <span className="loading-text">Loading Profiles...</span>
           </div>
+        ) : profiles.length === 0 ? (
+          <EmptyState onImportClick={handleImportProfile} />
         ) : selectedProfile ? (
           <ProfileDetails
             profile={selectedProfile}
@@ -237,9 +249,15 @@ function App() {
             onDelete={handleDeleteProfile}
             wireproxyBinaryPath={settings.wireproxyBinaryPath}
             onStatusChange={(status) => handleStatusChange(selectedProfile.id, status)}
+            showToast={showToast}
           />
         ) : (
-          <EmptyState onImportClick={handleImportProfile} />
+          <Dashboard
+            profiles={profiles}
+            onProfileSelect={selectProfile}
+            onImportClick={handleImportProfile}
+            onSettingsClick={handleOpenSettings}
+          />
         )}
       </main>
 
