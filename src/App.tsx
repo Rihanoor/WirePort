@@ -132,6 +132,7 @@ function App() {
           proxyType: newProfile.proxyType,
           port: newProfile.port,
           configContent: newProfile.configContent,
+          generatedAt: new Date().toISOString(),
         });
       } catch (genErr) {
         console.error("Failed to generate initial config:", genErr);

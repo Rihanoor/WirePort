@@ -1,6 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 static TRAY_NOTIFIED: AtomicBool = AtomicBool::new(false);
 
@@ -18,7 +18,7 @@ fn save_window_state(window: &tauri::Window) {
             return;
         }
     }
-    
+
     if let (Ok(physical_size), Ok(physical_pos), Ok(scale_factor)) = (
         window.outer_size(),
         window.outer_position(),
@@ -26,7 +26,7 @@ fn save_window_state(window: &tauri::Window) {
     ) {
         let logical_size = physical_size.to_logical::<f64>(scale_factor);
         let logical_pos = physical_pos.to_logical::<f64>(scale_factor);
-        
+
         // Basic sanity check to avoid invalid coordinates or zero/negative size
         if logical_size.width <= 100.0 || logical_size.height <= 100.0 {
             return;
@@ -93,22 +93,18 @@ fn parse_wg_config(content: &str) -> Option<WgConfig> {
             let val = line[eq_idx + 1..].trim().to_string();
 
             match current_section.to_lowercase().as_str() {
-                "interface" => {
-                    match key.as_str() {
-                        "privatekey" => private_key = Some(val),
-                        "address" => address = Some(val),
-                        "dns" => dns = val,
-                        _ => {}
-                    }
-                }
-                "peer" => {
-                    match key.as_str() {
-                        "publickey" => public_key = Some(val),
-                        "endpoint" => endpoint = Some(val),
-                        "allowedips" => allowed_ips = Some(val),
-                        _ => {}
-                    }
-                }
+                "interface" => match key.as_str() {
+                    "privatekey" => private_key = Some(val),
+                    "address" => address = Some(val),
+                    "dns" => dns = val,
+                    _ => {}
+                },
+                "peer" => match key.as_str() {
+                    "publickey" => public_key = Some(val),
+                    "endpoint" => endpoint = Some(val),
+                    "allowedips" => allowed_ips = Some(val),
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -133,11 +129,12 @@ fn pick_parse_and_validate_file() -> Result<Option<ParseResult>, String> {
 
     match file {
         Some(path) => {
-            let name = path.file_name()
+            let name = path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .map(|s| s.replace(".conf", ""))
                 .unwrap_or_else(|| "unnamed".to_string());
-            
+
             let source_path = path.to_string_lossy().to_string();
             let content = std::fs::read_to_string(&path)
                 .map_err(|e| format!("Failed to read file: {}", e))?;
@@ -162,31 +159,33 @@ fn pick_parse_and_validate_file() -> Result<Option<ParseResult>, String> {
 
 #[tauri::command]
 fn save_profiles(app_handle: tauri::AppHandle, profiles_json: String) -> Result<(), String> {
-    let app_dir = app_handle.path().app_data_dir()
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    
-    std::fs::create_dir_all(&app_dir)
-        .map_err(|e| format!("Failed to create directory: {}", e))?;
-    
+
+    std::fs::create_dir_all(&app_dir).map_err(|e| format!("Failed to create directory: {}", e))?;
+
     let file_path = app_dir.join("profiles.json");
     std::fs::write(&file_path, profiles_json)
         .map_err(|e| format!("Failed to write profiles: {}", e))?;
-        
+
     Ok(())
 }
 
 #[tauri::command]
 fn load_profiles(app_handle: tauri::AppHandle) -> Result<String, String> {
-    let app_dir = app_handle.path().app_data_dir()
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    
+
     let file_path = app_dir.join("profiles.json");
     if !file_path.exists() {
         return Ok("[]".to_string());
     }
-    
-    std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read profiles: {}", e))
+
+    std::fs::read_to_string(&file_path).map_err(|e| format!("Failed to read profiles: {}", e))
 }
 
 #[derive(serde::Serialize)]
@@ -204,20 +203,20 @@ fn parse_meta_comments(content: &str) -> (String, String, u16) {
     let mut generated_at = String::new();
     let mut proxy_type = "socks5".to_string();
     let mut port = 1080;
-    
+
     for line in content.lines() {
         let line = line.trim();
-        if line.starts_with("# GeneratedAt:") {
-            generated_at = line["# GeneratedAt:".len()..].trim().to_string();
-        } else if line.starts_with("# ProxyType:") {
-            proxy_type = line["# ProxyType:".len()..].trim().to_string();
-        } else if line.starts_with("# Port:") {
-            if let Ok(p) = line["# Port:".len()..].trim().parse::<u16>() {
+        if let Some(value) = line.strip_prefix("# GeneratedAt:") {
+            generated_at = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("# ProxyType:") {
+            proxy_type = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("# Port:") {
+            if let Ok(p) = value.trim().parse::<u16>() {
                 port = p;
             }
         }
     }
-    
+
     (generated_at, proxy_type, port)
 }
 
@@ -241,7 +240,9 @@ fn generate_wireproxy_config(
         return Err("Invalid WireGuard configuration".to_string());
     }
 
-    let app_dir = app_handle.path().app_data_dir()
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     let gen_dir = app_dir.join("generated");
     std::fs::create_dir_all(&gen_dir)
@@ -257,7 +258,7 @@ fn generate_wireproxy_config(
     );
     generated.push_str(config_content.trim());
     generated.push_str("\n\n");
-    
+
     if proxy_type == "socks5" {
         generated.push_str("[Socks5]\n");
         generated.push_str(&format!("BindAddress = 127.0.0.1:{}\n", port));
@@ -283,20 +284,24 @@ fn load_generated_config(
     app_handle: tauri::AppHandle,
     profile_id: String,
 ) -> Result<Option<ConfigMeta>, String> {
-    let app_dir = app_handle.path().app_data_dir()
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    let file_path = app_dir.join("generated").join(format!("{}.conf", profile_id));
-    
+    let file_path = app_dir
+        .join("generated")
+        .join(format!("{}.conf", profile_id));
+
     if !file_path.exists() {
         return Ok(None);
     }
-    
+
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read generated config: {}", e))?;
-    
+
     let path_str = file_path.to_string_lossy().to_string();
     let (generated_at, proxy_type, port) = parse_meta_comments(&content);
-    
+
     Ok(Some(ConfigMeta {
         content,
         path: path_str,
@@ -314,27 +319,28 @@ pub struct AppSettings {
 
 #[tauri::command]
 fn load_settings(app_handle: tauri::AppHandle) -> Result<AppSettings, String> {
-    let app_dir = app_handle.path().app_data_dir()
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    
+
     let file_path = app_dir.join("settings.json");
     if !file_path.exists() {
         return Ok(AppSettings {
             wireproxy_binary_path: String::new(),
         });
     }
-    
+
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read settings: {}", e))?;
-    
-    serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse settings: {}", e))
+
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse settings: {}", e))
 }
 
 use std::collections::{HashMap, VecDeque};
 
-use std::sync::Mutex;
 use std::io::BufRead;
+use std::sync::Mutex;
 
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -413,11 +419,14 @@ fn strip_wireproxy_prefix(line: &str) -> &str {
         let lvl = parts[0].to_uppercase();
         let date = parts[1];
         let time = parts[2];
-        
+
         let is_valid_level = lvl == "DEBUG:" || lvl == "INFO:" || lvl == "WARN:" || lvl == "ERROR:";
-        let is_valid_date = date.len() == 10 && date.chars().nth(4) == Some('/') && date.chars().nth(7) == Some('/');
-        let is_valid_time = time.len() == 8 && time.chars().nth(2) == Some(':') && time.chars().nth(5) == Some(':');
-        
+        let is_valid_date = date.len() == 10
+            && date.chars().nth(4) == Some('/')
+            && date.chars().nth(7) == Some('/');
+        let is_valid_time =
+            time.len() == 8 && time.chars().nth(2) == Some(':') && time.chars().nth(5) == Some(':');
+
         if is_valid_level && is_valid_date && is_valid_time {
             return parts[3];
         }
@@ -435,7 +444,7 @@ fn parse_worker_log(message: &str) -> Option<WorkerType> {
     if !message.starts_with("Routine: ") || !message.ends_with(" - started") {
         return None;
     }
-    
+
     if message.contains(" encryption worker ") {
         Some(WorkerType::Encryption)
     } else if message.contains(" decryption worker ") {
@@ -467,18 +476,21 @@ fn append_log(state: &ProcessManager, profile_id: &str, level: &str, message: &s
 
         let mut logs = state.logs.lock().unwrap();
         let entries = logs.entry(profile_id.to_string()).or_default();
-        
+
         let mut found_idx = None;
         let len = entries.len();
         let lookback = if len > 10 { 10 } else { len };
         for i in 0..lookback {
             let idx = len - 1 - i;
-            if entries[idx].message.starts_with("WireGuard workers initialized:") {
+            if entries[idx]
+                .message
+                .starts_with("WireGuard workers initialized:")
+            {
                 found_idx = Some(idx);
                 break;
             }
         }
-        
+
         if let Some(idx) = found_idx {
             entries[idx].message = aggregated_msg;
             entries[idx].timestamp = timestamp;
@@ -509,14 +521,14 @@ fn append_log(state: &ProcessManager, profile_id: &str, level: &str, message: &s
 
 fn handle_unexpected_exit(app_handle: &tauri::AppHandle, profile_id: &str) {
     let state = app_handle.state::<ProcessManager>();
-    
+
     // Check if the process is actually dead before removing it from the map
     let is_dead = {
         let mut map = state.processes.lock().unwrap();
         if let Some(proc) = map.get_mut(profile_id) {
             match proc.child.try_wait() {
                 Ok(None) => false, // Still running!
-                _ => true, // Dead or error
+                _ => true,         // Dead or error
             }
         } else {
             false
@@ -531,7 +543,7 @@ fn handle_unexpected_exit(app_handle: &tauri::AppHandle, profile_id: &str) {
         let mut map = state.processes.lock().unwrap();
         map.remove(profile_id)
     };
-    
+
     if let Some(mut proc) = child_opt {
         let status = proc.child.wait();
         append_log(&state, profile_id, "INFO", "WireProxy process stopped");
@@ -543,13 +555,23 @@ fn handle_unexpected_exit(app_handle: &tauri::AppHandle, profile_id: &str) {
             },
             Err(_) => "unknown".to_string(),
         };
-        append_log(&state, profile_id, "ERROR", &format!("WireProxy exited unexpectedly (exit code: {})", exit_code_str));
+        append_log(
+            &state,
+            profile_id,
+            "ERROR",
+            &format!(
+                "WireProxy exited unexpectedly (exit code: {})",
+                exit_code_str
+            ),
+        );
         let _ = update_tray_menu(app_handle, "Error");
 
         let profile_name = get_profile_info(app_handle, profile_id)
             .map(|info| info.name)
             .unwrap_or_else(|| "Profile".to_string());
-        let _ = app_handle.notification().builder()
+        let _ = app_handle
+            .notification()
+            .builder()
             .title("WirePort Connection Lost")
             .body(format!("{} stopped unexpectedly.", profile_name))
             .show();
@@ -594,33 +616,48 @@ fn get_bundled_sidecar_path(app_handle: &tauri::AppHandle) -> Result<std::path::
         "aarch64-apple-darwin"
     };
 
-    let bin_name = format!("wireproxy-{}", target_triple);
+    let platform_bin_name = format!("wireproxy-{}", target_triple);
+    let bundled_bin_name = if cfg!(target_os = "windows") {
+        "wireproxy.exe".to_string()
+    } else {
+        "wireproxy".to_string()
+    };
+    let candidate_names = [bundled_bin_name, platform_bin_name];
 
     // 1. Production bundle lookup: sidecar binary should be alongside the current executable
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            let prod_path = exe_dir.join(&bin_name);
-            if prod_path.exists() && prod_path.is_file() {
-                return Ok(prod_path);
+            for bin_name in &candidate_names {
+                let prod_path = exe_dir.join(bin_name);
+                if prod_path.exists() && prod_path.is_file() {
+                    return Ok(prod_path);
+                }
             }
         }
     }
 
     // 2. Development lookup: sidecar is located in src-tauri/binaries/ relative to resource_dir()
     if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        let dev_path = resource_dir.join("binaries").join(&bin_name);
-        if dev_path.exists() && dev_path.is_file() {
-            return Ok(dev_path);
+        for bin_name in &candidate_names {
+            let dev_path = resource_dir.join("binaries").join(bin_name);
+            if dev_path.exists() && dev_path.is_file() {
+                return Ok(dev_path);
+            }
         }
     }
 
     // 3. Last resort fallback to current working directory
-    let fallback_path = std::path::PathBuf::from("binaries").join(&bin_name);
-    if fallback_path.exists() && fallback_path.is_file() {
-        return Ok(fallback_path);
+    for bin_name in &candidate_names {
+        let fallback_path = std::path::PathBuf::from("binaries").join(bin_name);
+        if fallback_path.exists() && fallback_path.is_file() {
+            return Ok(fallback_path);
+        }
     }
 
-    Err("Could not find bundled WireProxy sidecar binary".to_string())
+    Err(format!(
+        "Could not find bundled WireProxy sidecar binary. Tried: {}",
+        candidate_names.join(", ")
+    ))
 }
 
 fn find_free_port() -> Option<u16> {
@@ -662,7 +699,12 @@ fn start_wireproxy(
             Err(e) => {
                 append_log(&state, &profile_id, "ERROR", &e);
                 append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-                append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+                append_log(
+                    &state,
+                    &profile_id,
+                    "ERROR",
+                    "WireProxy exited unexpectedly (exit code: unknown)",
+                );
                 return Err(e);
             }
         }
@@ -673,7 +715,12 @@ fn start_wireproxy(
         let err_msg = format!("WireProxy binary not found at: {}", bin_path.display());
         append_log(&state, &profile_id, "ERROR", &err_msg);
         append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-        append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+        append_log(
+            &state,
+            &profile_id,
+            "ERROR",
+            "WireProxy exited unexpectedly (exit code: unknown)",
+        );
         return Err(err_msg);
     }
 
@@ -683,7 +730,12 @@ fn start_wireproxy(
         let err_msg = format!("Configuration file not found at: {}", config_path);
         append_log(&state, &profile_id, "ERROR", &err_msg);
         append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-        append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+        append_log(
+            &state,
+            &profile_id,
+            "ERROR",
+            "WireProxy exited unexpectedly (exit code: unknown)",
+        );
         return Err(err_msg);
     }
 
@@ -692,17 +744,27 @@ fn start_wireproxy(
         let err_msg = "Port must be between 1024 and 65535".to_string();
         append_log(&state, &profile_id, "ERROR", &err_msg);
         append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-        append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+        append_log(
+            &state,
+            &profile_id,
+            "ERROR",
+            "WireProxy exited unexpectedly (exit code: unknown)",
+        );
         return Err(err_msg);
     }
 
     // 4. Verify no other process is running
     let mut map = state.processes.lock().unwrap();
-    
+
     // Clean up dead processes first
     let mut dead_keys = Vec::new();
     for (k, proc) in map.iter_mut() {
-        if proc.child.try_wait().map(|status| status.is_some()).unwrap_or(true) {
+        if proc
+            .child
+            .try_wait()
+            .map(|status| status.is_some())
+            .unwrap_or(true)
+        {
             dead_keys.push(k.clone());
         }
     }
@@ -714,11 +776,17 @@ fn start_wireproxy(
         let err_msg = if map.contains_key(&profile_id) {
             "This profile is already running".to_string()
         } else {
-            "Another profile is already running. Only one profile can run at a time in V1.".to_string()
+            "Another profile is already running. Only one profile can run at a time in V1."
+                .to_string()
         };
         append_log(&state, &profile_id, "ERROR", &err_msg);
         append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-        append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+        append_log(
+            &state,
+            &profile_id,
+            "ERROR",
+            "WireProxy exited unexpectedly (exit code: unknown)",
+        );
         return Err(err_msg);
     }
 
@@ -729,7 +797,12 @@ fn start_wireproxy(
             let err_msg = "Failed to allocate dynamic info port".to_string();
             append_log(&state, &profile_id, "ERROR", &err_msg);
             append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-            append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+            append_log(
+                &state,
+                &profile_id,
+                "ERROR",
+                "WireProxy exited unexpectedly (exit code: unknown)",
+            );
             return Err(err_msg);
         }
     };
@@ -742,16 +815,22 @@ fn start_wireproxy(
         .arg(format!("127.0.0.1:{}", info_port))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                let err_msg = format!("Failed to spawn WireProxy process: {}", e);
-                append_log(&state, &profile_id, "ERROR", &err_msg);
-                append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-                append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
-                return Err(err_msg);
-            }
-        };
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let err_msg = format!("Failed to spawn WireProxy process: {}", e);
+            append_log(&state, &profile_id, "ERROR", &err_msg);
+            append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
+            append_log(
+                &state,
+                &profile_id,
+                "ERROR",
+                "WireProxy exited unexpectedly (exit code: unknown)",
+            );
+            return Err(err_msg);
+        }
+    };
 
     // 6. Validation: Sleep 200ms and check status
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -766,11 +845,14 @@ fn start_wireproxy(
             let stdout = child_to_insert.stdout.take();
             let stderr = child_to_insert.stderr.take();
 
-            map.insert(profile_id.clone(), RunningProcess {
-                child: child_to_insert,
-                info_port,
-                started_at: std::time::Instant::now(),
-            });
+            map.insert(
+                profile_id.clone(),
+                RunningProcess {
+                    child: child_to_insert,
+                    info_port,
+                    started_at: std::time::Instant::now(),
+                },
+            );
             drop(map); // Release lock before updating tray menu
 
             let _ = update_tray_menu(&app_handle, "Connected");
@@ -778,9 +860,14 @@ fn start_wireproxy(
             let profile_name = get_profile_info(&app_handle, &profile_id)
                 .map(|info| info.name)
                 .unwrap_or_else(|| "Profile".to_string());
-            let _ = app_handle.notification().builder()
+            let _ = app_handle
+                .notification()
+                .builder()
                 .title("WirePort Connected")
-                .body(format!("{} is now running on 127.0.0.1:{}", profile_name, port))
+                .body(format!(
+                    "{} is now running on 127.0.0.1:{}",
+                    profile_name, port
+                ))
                 .show();
 
             if let Some(stdout_pipe) = stdout {
@@ -788,11 +875,9 @@ fn start_wireproxy(
                 let profile_id_clone = profile_id.clone();
                 std::thread::spawn(move || {
                     let reader = std::io::BufReader::new(stdout_pipe);
-                    for line in reader.lines() {
-                        if let Ok(msg) = line {
-                            let state = app_handle_clone.state::<ProcessManager>();
-                            append_log(&state, &profile_id_clone, "INFO", &msg);
-                        }
+                    for msg in reader.lines().map_while(Result::ok) {
+                        let state = app_handle_clone.state::<ProcessManager>();
+                        append_log(&state, &profile_id_clone, "INFO", &msg);
                     }
                     handle_unexpected_exit(&app_handle_clone, &profile_id_clone);
                 });
@@ -803,12 +888,10 @@ fn start_wireproxy(
                 let profile_id_clone = profile_id.clone();
                 std::thread::spawn(move || {
                     let reader = std::io::BufReader::new(stderr_pipe);
-                    for line in reader.lines() {
-                        if let Ok(msg) = line {
-                            let state = app_handle_clone.state::<ProcessManager>();
-                            let level = classify_stderr_line(&msg);
-                            append_log(&state, &profile_id_clone, level, &msg);
-                        }
+                    for msg in reader.lines().map_while(Result::ok) {
+                        let state = app_handle_clone.state::<ProcessManager>();
+                        let level = classify_stderr_line(&msg);
+                        append_log(&state, &profile_id_clone, level, &msg);
                     }
                     handle_unexpected_exit(&app_handle_clone, &profile_id_clone);
                 });
@@ -818,7 +901,7 @@ fn start_wireproxy(
         }
         Ok(Some(status)) => {
             drop(map); // Release lock immediately
-            // Exited immediately. Capture stdout and stderr.
+                       // Exited immediately. Capture stdout and stderr.
             let mut stdout_content = String::new();
             if let Some(mut stdout) = child.stdout.take() {
                 use std::io::Read;
@@ -844,12 +927,23 @@ fn start_wireproxy(
                 Some(code) => code.to_string(),
                 None => "unknown".to_string(),
             };
-            append_log(&state, &profile_id, "ERROR", &format!("WireProxy exited unexpectedly (exit code: {})", exit_code_str));
+            append_log(
+                &state,
+                &profile_id,
+                "ERROR",
+                &format!(
+                    "WireProxy exited unexpectedly (exit code: {})",
+                    exit_code_str
+                ),
+            );
 
             let stderr_msg = stderr_content.trim();
             let _ = update_tray_menu(&app_handle, "Error");
             if stderr_msg.is_empty() {
-                Err(format!("WireProxy exited immediately with status: {}", status))
+                Err(format!(
+                    "WireProxy exited immediately with status: {}",
+                    status
+                ))
             } else {
                 Err(format!("WireProxy failed to start: {}", stderr_msg))
             }
@@ -859,7 +953,12 @@ fn start_wireproxy(
             let err_msg = format!("Failed to check WireProxy status after spawn: {}", e);
             append_log(&state, &profile_id, "ERROR", &err_msg);
             append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-            append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+            append_log(
+                &state,
+                &profile_id,
+                "ERROR",
+                "WireProxy exited unexpectedly (exit code: unknown)",
+            );
             let _ = update_tray_menu(&app_handle, "Error");
             Err(err_msg)
         }
@@ -891,7 +990,9 @@ fn stop_wireproxy(
         let profile_name = get_profile_info(&app_handle, &profile_id)
             .map(|info| info.name)
             .unwrap_or_else(|| "Profile".to_string());
-        let _ = app_handle.notification().builder()
+        let _ = app_handle
+            .notification()
+            .builder()
             .title("WirePort Disconnected")
             .body(format!("{} has been stopped.", profile_name))
             .show();
@@ -946,10 +1047,7 @@ async fn get_proxy_stats(
         };
 
         // Check if child is running
-        let is_running = match proc.child.try_wait() {
-            Ok(None) => true,
-            _ => false,
-        };
+        let is_running = matches!(proc.child.try_wait(), Ok(None));
 
         if !is_running {
             let status = match proc.child.try_wait() {
@@ -973,10 +1071,11 @@ async fn get_proxy_stats(
 
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))
-        .build() {
-            Ok(c) => c,
-            Err(e) => return Err(format!("Failed to build reqwest client: {}", e)),
-        };
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return Err(format!("Failed to build reqwest client: {}", e)),
+    };
 
     let url = format!("http://127.0.0.1:{}/metrics", info_port);
     let response = client.get(&url).send().await;
@@ -1042,11 +1141,14 @@ async fn get_proxy_stats(
         }
         None => {
             // First stats poll: create cache and return speed = 0
-            stats_map.insert(profile_id.clone(), StatsCacheEntry {
-                last_tx_bytes: tx_bytes,
-                last_rx_bytes: rx_bytes,
-                last_polled_at: now,
-            });
+            stats_map.insert(
+                profile_id.clone(),
+                StatsCacheEntry {
+                    last_tx_bytes: tx_bytes,
+                    last_rx_bytes: rx_bytes,
+                    last_polled_at: now,
+                },
+            );
             (0, 0)
         }
     };
@@ -1054,7 +1156,9 @@ async fn get_proxy_stats(
     let last_handshake = if last_handshake_sec == 0 {
         "Never".to_string()
     } else {
-        if let Some(dt) = chrono::DateTime::from_timestamp(last_handshake_sec, last_handshake_nsec as u32) {
+        if let Some(dt) =
+            chrono::DateTime::from_timestamp(last_handshake_sec, last_handshake_nsec as u32)
+        {
             dt.to_rfc3339()
         } else {
             "Never".to_string()
@@ -1085,8 +1189,6 @@ async fn get_proxy_stats(
     })
 }
 
-
-
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionHealthResult {
@@ -1098,9 +1200,7 @@ pub struct ConnectionHealthResult {
     error: String,
 }
 
-async fn get_local_public_ip_internal(
-    state: &ProcessManager,
-) -> Result<String, String> {
+async fn get_local_public_ip_internal(state: &ProcessManager) -> Result<String, String> {
     // Check if cached (5 min = 300 seconds)
     {
         let cache = state.local_ip_cache.lock().unwrap();
@@ -1154,9 +1254,7 @@ async fn get_local_public_ip_internal(
 }
 
 #[tauri::command]
-async fn get_local_public_ip(
-    state: tauri::State<'_, ProcessManager>,
-) -> Result<String, String> {
+async fn get_local_public_ip(state: tauri::State<'_, ProcessManager>) -> Result<String, String> {
     get_local_public_ip_internal(&state).await
 }
 
@@ -1169,20 +1267,26 @@ async fn test_proxy_connection(
     // 1. Fetch local public IP first
     let local_ip = match get_local_public_ip_internal(&state).await {
         Ok(ip) => ip,
-        Err(e) => return Ok(ConnectionHealthResult {
-            success: false,
-            tunnel_active: false,
-            exit_ip: String::new(),
-            local_ip: String::new(),
-            latency_ms: 0,
-            error: format!("Failed to fetch local public IP: {}", e),
-        }),
+        Err(e) => {
+            return Ok(ConnectionHealthResult {
+                success: false,
+                tunnel_active: false,
+                exit_ip: String::new(),
+                local_ip: String::new(),
+                latency_ms: 0,
+                error: format!("Failed to fetch local public IP: {}", e),
+            })
+        }
     };
 
     // 2. Get proxy settings
-    let app_dir = app_handle.path().app_data_dir()
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    let file_path = app_dir.join("generated").join(format!("{}.conf", profile_id));
+    let file_path = app_dir
+        .join("generated")
+        .join(format!("{}.conf", profile_id));
     if !file_path.exists() {
         return Ok(ConnectionHealthResult {
             success: false,
@@ -1208,30 +1312,35 @@ async fn test_proxy_connection(
 
     let proxy = match reqwest::Proxy::all(&proxy_url) {
         Ok(p) => p,
-        Err(e) => return Ok(ConnectionHealthResult {
-            success: false,
-            tunnel_active: false,
-            exit_ip: String::new(),
-            local_ip,
-            latency_ms: 0,
-            error: format!("Failed to configure proxy URL: {}", e),
-        }),
+        Err(e) => {
+            return Ok(ConnectionHealthResult {
+                success: false,
+                tunnel_active: false,
+                exit_ip: String::new(),
+                local_ip,
+                latency_ms: 0,
+                error: format!("Failed to configure proxy URL: {}", e),
+            })
+        }
     };
 
     let client = match reqwest::Client::builder()
         .proxy(proxy)
         .timeout(std::time::Duration::from_secs(5))
-        .build() {
-            Ok(c) => c,
-            Err(e) => return Ok(ConnectionHealthResult {
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(ConnectionHealthResult {
                 success: false,
                 tunnel_active: false,
                 exit_ip: String::new(),
                 local_ip,
                 latency_ms: 0,
                 error: format!("Failed to build HTTP client: {}", e),
-            }),
-        };
+            })
+        }
+    };
 
     // 4. Make HTTP request with fallbacks
     let providers = [
@@ -1253,11 +1362,13 @@ async fn test_proxy_connection(
                             if !exit_ip.is_empty() {
                                 let latency_ms = start_time.elapsed().as_millis() as u64;
                                 // True tunnel verification logic
-                                let tunnel_active = !exit_ip.is_empty() && !local_ip.is_empty() && exit_ip != local_ip;
+                                let tunnel_active = !exit_ip.is_empty()
+                                    && !local_ip.is_empty()
+                                    && exit_ip != local_ip;
 
-                                 if tunnel_active {
-                                     let _ = update_tray_menu(&app_handle, "Connected");
-                                 } else {
+                                if tunnel_active {
+                                    let _ = update_tray_menu(&app_handle, "Connected");
+                                } else {
                                     let _ = update_tray_menu(&app_handle, "Error");
                                 }
 
@@ -1316,19 +1427,36 @@ fn get_profile_info(app: &tauri::AppHandle, profile_id: &str) -> Option<ProfileI
     let content = std::fs::read_to_string(&file_path).ok()?;
     let profiles: serde_json::Value = serde_json::from_str(&content).ok()?;
     let arr = profiles.as_array()?;
-    let profile_obj = arr.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(profile_id))?;
-    
-    let name = profile_obj.get("name").and_then(|v| v.as_str()).unwrap_or("Unnamed").to_string();
-    let proxy_type = profile_obj.get("proxyType").and_then(|v| v.as_str()).unwrap_or("socks5").to_string();
-    let port = profile_obj.get("port").and_then(|v| v.as_u64()).unwrap_or(1080) as u16;
-    
-    Some(ProfileInfo { name, proxy_type, port })
+    let profile_obj = arr
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(profile_id))?;
+
+    let name = profile_obj
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unnamed")
+        .to_string();
+    let proxy_type = profile_obj
+        .get("proxyType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("socks5")
+        .to_string();
+    let port = profile_obj
+        .get("port")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1080) as u16;
+
+    Some(ProfileInfo {
+        name,
+        proxy_type,
+        port,
+    })
 }
 
 fn update_tray_menu(app: &tauri::AppHandle, status: &str) -> Result<(), String> {
     if let Some(tray) = app.tray_by_id("main") {
         let state = app.state::<ProcessManager>();
-        
+
         let is_connected = status.contains("Connected");
         let status_label = if status.contains("Connected") {
             "● Connected"
@@ -1337,24 +1465,24 @@ fn update_tray_menu(app: &tauri::AppHandle, status: &str) -> Result<(), String> 
         } else {
             "● Disconnected"
         };
-        
+
         let active_id = {
             let map = state.processes.lock().unwrap();
             map.keys().next().cloned()
         };
-        
+
         let selected_id = {
             let guard = state.selected_profile_id.lock().unwrap();
             guard.clone()
         };
-        
+
         let display_id = active_id.or(selected_id);
-        
+
         let (profile_name, proxy_url) = if let Some(ref pid) = display_id {
             if let Some(info) = get_profile_info(app, pid) {
                 (
                     info.name,
-                    format!("{}://127.0.0.1:{}", info.proxy_type, info.port)
+                    format!("{}://127.0.0.1:{}", info.proxy_type, info.port),
                 )
             } else {
                 ("None".to_string(), "None".to_string())
@@ -1362,63 +1490,73 @@ fn update_tray_menu(app: &tauri::AppHandle, status: &str) -> Result<(), String> 
         } else {
             ("None".to_string(), "None".to_string())
         };
-        
+
         let title_i = tauri::menu::MenuItemBuilder::with_id("title", "WirePort")
             .enabled(false)
             .build(app)
             .map_err(|e| e.to_string())?;
-            
+
         let status_i = tauri::menu::MenuItemBuilder::with_id("status", status_label)
             .enabled(false)
             .build(app)
             .map_err(|e| e.to_string())?;
-            
-        let profile_i = tauri::menu::MenuItemBuilder::with_id("profile", format!("Current Profile: {}", profile_name))
-            .enabled(false)
-            .build(app)
-            .map_err(|e| e.to_string())?;
-            
-        let proxy_i = tauri::menu::MenuItemBuilder::with_id("proxy", format!("Proxy: {}", proxy_url))
-            .enabled(false)
-            .build(app)
-            .map_err(|e| e.to_string())?;
-            
+
+        let profile_i = tauri::menu::MenuItemBuilder::with_id(
+            "profile",
+            format!("Current Profile: {}", profile_name),
+        )
+        .enabled(false)
+        .build(app)
+        .map_err(|e| e.to_string())?;
+
+        let proxy_i =
+            tauri::menu::MenuItemBuilder::with_id("proxy", format!("Proxy: {}", proxy_url))
+                .enabled(false)
+                .build(app)
+                .map_err(|e| e.to_string())?;
+
         let connect_i = tauri::menu::MenuItemBuilder::with_id("connect", "Connect")
             .enabled(!is_connected)
             .build(app)
             .map_err(|e| e.to_string())?;
-            
+
         let disconnect_i = tauri::menu::MenuItemBuilder::with_id("disconnect", "Disconnect")
             .enabled(is_connected)
             .build(app)
             .map_err(|e| e.to_string())?;
-            
+
         let open_i = tauri::menu::MenuItemBuilder::with_id("open", "Open Dashboard")
             .build(app)
             .map_err(|e| e.to_string())?;
-            
+
         let quit_i = tauri::menu::MenuItemBuilder::with_id("quit", "Quit")
             .build(app)
             .map_err(|e| e.to_string())?;
 
-        let menu = tauri::menu::Menu::with_items(app, &[
-            &title_i,
-            &status_i,
-            &profile_i,
-            &proxy_i,
-            &connect_i,
-            &disconnect_i,
-            &open_i,
-            &quit_i,
-        ]).map_err(|e| e.to_string())?;
-        
+        let menu = tauri::menu::Menu::with_items(
+            app,
+            &[
+                &title_i,
+                &status_i,
+                &profile_i,
+                &proxy_i,
+                &connect_i,
+                &disconnect_i,
+                &open_i,
+                &quit_i,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
         tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 fn update_last_connected_at(app_handle: &tauri::AppHandle, profile_id: &str) -> Result<(), String> {
-    let app_dir = app_handle.path().app_data_dir()
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     let file_path = app_dir.join("profiles.json");
     if !file_path.exists() {
@@ -1426,9 +1564,9 @@ fn update_last_connected_at(app_handle: &tauri::AppHandle, profile_id: &str) -> 
     }
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read profiles: {}", e))?;
-    let mut profiles: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse profiles: {}", e))?;
-    
+    let mut profiles: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse profiles: {}", e))?;
+
     if let Some(arr) = profiles.as_array_mut() {
         let mut found = false;
         for p in arr.iter_mut() {
@@ -1473,7 +1611,9 @@ fn stop_running_profile(app_handle: &tauri::AppHandle) -> Result<(), String> {
             stop_wireproxy(app_handle.clone(), profile_id, state)?;
         }
         None => {
-            let _ = app_handle.notification().builder()
+            let _ = app_handle
+                .notification()
+                .builder()
                 .title("WirePort")
                 .body("No active profile.")
                 .show();
@@ -1492,7 +1632,9 @@ fn connect_current_profile(app_handle: &tauri::AppHandle) -> Result<(), String> 
     let profile_id = match selected_id {
         Some(id) => id,
         None => {
-            let _ = app_handle.notification().builder()
+            let _ = app_handle
+                .notification()
+                .builder()
                 .title("No profile selected")
                 .body("Open WirePort and select a profile first.")
                 .show();
@@ -1505,7 +1647,9 @@ fn connect_current_profile(app_handle: &tauri::AppHandle) -> Result<(), String> 
         !map.is_empty()
     };
     if is_running {
-        let _ = app_handle.notification().builder()
+        let _ = app_handle
+            .notification()
+            .builder()
             .title("WirePort")
             .body("A profile is already running.")
             .show();
@@ -1513,7 +1657,9 @@ fn connect_current_profile(app_handle: &tauri::AppHandle) -> Result<(), String> 
     }
 
     // Load profiles.json
-    let app_dir = app_handle.path().app_data_dir()
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     let file_path = app_dir.join("profiles.json");
     if !file_path.exists() {
@@ -1521,21 +1667,28 @@ fn connect_current_profile(app_handle: &tauri::AppHandle) -> Result<(), String> 
     }
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read profiles: {}", e))?;
-    let profiles: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse profiles: {}", e))?;
+    let profiles: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse profiles: {}", e))?;
 
     let arr = profiles.as_array().ok_or("Invalid profiles format")?;
-    let profile_obj = arr.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(&profile_id))
+    let profile_obj = arr
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(&profile_id))
         .ok_or(format!("Profile not found: {}", profile_id))?;
 
-    let port = profile_obj.get("port").and_then(|v| v.as_u64()).ok_or("Port not found in profile")? as u16;
-    
+    let port = profile_obj
+        .get("port")
+        .and_then(|v| v.as_u64())
+        .ok_or("Port not found in profile")? as u16;
+
     // Get settings
     let settings = load_settings(app_handle.clone()).unwrap_or(AppSettings {
         wireproxy_binary_path: String::new(),
     });
 
-    let config_path = app_dir.join("generated").join(format!("{}.conf", profile_id));
+    let config_path = app_dir
+        .join("generated")
+        .join(format!("{}.conf", profile_id));
     let config_path_str = config_path.to_string_lossy().to_string();
 
     // Call start_wireproxy
@@ -1612,25 +1765,37 @@ pub fn run() {
 
             let _tray = tauri::tray::TrayIconBuilder::with_id("main")
                 .icon(icon)
-                .on_menu_event(|app, event| {
-                    match event.id().as_ref() {
-                        "quit" => {
-                            quit_app(app);
-                        }
-                        "open" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
-                        "connect" => {
-                            let _ = connect_current_profile(app);
-                        }
-                        "disconnect" => {
-                            let _ = stop_running_profile(app);
-                        }
-                        _ => {}
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "quit" => {
+                        quit_app(app);
                     }
+                    "open" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "connect" => {
+                        if let Err(err) = connect_current_profile(app) {
+                            let _ = app
+                                .notification()
+                                .builder()
+                                .title("WirePort Connection Failed")
+                                .body(err)
+                                .show();
+                        }
+                    }
+                    "disconnect" => {
+                        if let Err(err) = stop_running_profile(app) {
+                            let _ = app
+                                .notification()
+                                .builder()
+                                .title("WirePort Disconnect Failed")
+                                .body(err)
+                                .show();
+                        }
+                    }
+                    _ => {}
                 })
                 .build(app)?;
 
@@ -1648,12 +1813,18 @@ pub fn run() {
                                     width: state.width,
                                     height: state.height,
                                 }));
-                                
-                                if state.x > -10000 && state.x < 10000 && state.y > -10000 && state.y < 10000 {
-                                    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
-                                        x: state.x as f64,
-                                        y: state.y as f64,
-                                    }));
+
+                                if state.x > -10000
+                                    && state.x < 10000
+                                    && state.y > -10000
+                                    && state.y < 10000
+                                {
+                                    let _ = window.set_position(tauri::Position::Logical(
+                                        tauri::LogicalPosition {
+                                            x: state.x as f64,
+                                            y: state.y as f64,
+                                        },
+                                    ));
                                 }
                             }
                         }
@@ -1667,9 +1838,12 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
                 api.prevent_close();
-                
+
                 if !TRAY_NOTIFIED.swap(true, Ordering::Relaxed) {
-                    let _ = window.app_handle().notification().builder()
+                    let _ = window
+                        .app_handle()
+                        .notification()
+                        .builder()
                         .title("WirePort")
                         .body("WirePort is still running in the system tray")
                         .show();
@@ -1682,7 +1856,10 @@ pub fn run() {
                         let _ = proc.child.wait();
                     }
                 }
-            } else if matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)) {
+            } else if matches!(
+                event,
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)
+            ) {
                 save_window_state(window);
             }
         })
