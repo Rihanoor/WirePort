@@ -2,10 +2,10 @@ import React, { useState, useEffect } from "react";
 import { 
   Shield, Globe, Calendar, Copy, Check, Eye, EyeOff, 
   FileText, ArrowUpRight, CheckCircle2, XCircle, AlertCircle, HelpCircle, FileCode,
-  Activity, RefreshCw, Clock
+  Activity, RefreshCw, Clock, Download, Trash2, Terminal, ChevronRight
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { Profile, ProxyType, ProfileStatus, GeneratedConfigMeta, ConnectionHealthResult } from "../types";
+import { Profile, ProxyType, ProfileStatus, GeneratedConfigMeta, ConnectionHealthResult, LogEntry } from "../types";
 
 
 interface ProfileDetailsProps {
@@ -49,6 +49,114 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     const saved = localStorage.getItem("autoCheckHealth");
     return saved !== null ? saved === "true" : true;
   });
+
+  // Logs State
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [autoScroll, setAutoScroll] = useState<boolean>(() => {
+    const saved = localStorage.getItem("autoScrollLogs");
+    return saved !== null ? saved === "true" : true;
+  });
+  const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
+  const [copiedLogs, setCopiedLogs] = useState(false);
+  const [isLogsExpanded, setIsLogsExpanded] = useState(false);
+  const [logFilter, setLogFilter] = useState<"all" | "info" | "debug" | "warn" | "error">("all");
+  const logEndRef = React.useRef<HTMLDivElement>(null);
+  const logContainerRef = React.useRef<HTMLDivElement>(null);
+
+  // Auto expand when logs are first received, auto collapse when cleared
+  const prevLogsEmptyRef = React.useRef(true);
+  useEffect(() => {
+    const isEmpty = logs.length === 0;
+    if (isEmpty !== prevLogsEmptyRef.current) {
+      setIsLogsExpanded(!isEmpty);
+      prevLogsEmptyRef.current = isEmpty;
+    }
+  }, [logs.length === 0]);
+
+  const fetchLogs = async () => {
+    try {
+      setIsRefreshingLogs(true);
+      const fetchedLogs = await invoke<LogEntry[]>("get_profile_logs", {
+        profileId: profile.id,
+      });
+      setLogs(fetchedLogs);
+    } catch (err) {
+      console.error("Failed to fetch logs:", err);
+    } finally {
+      setIsRefreshingLogs(false);
+    }
+  };
+
+  const handleClearLogs = async () => {
+    try {
+      await invoke("clear_profile_logs", { profileId: profile.id });
+      setLogs([]);
+    } catch (err) {
+      console.error("Failed to clear logs:", err);
+    }
+  };
+
+  const handleCopyLogs = () => {
+    if (logs.length === 0) return;
+    const logString = logs
+      .map((log) => `[${log.timestamp}] [${log.level.toUpperCase()}] ${log.message}`)
+      .join("\n");
+    navigator.clipboard.writeText(logString);
+    setCopiedLogs(true);
+    setTimeout(() => setCopiedLogs(false), 2000);
+  };
+
+  const handleDownloadLogs = () => {
+    if (logs.length === 0) return;
+    const logString = logs
+      .map((log) => `[${log.timestamp}] [${log.level.toUpperCase()}] ${log.message}`)
+      .join("\n");
+    
+    const dateStr = new Date().toISOString().split("T")[0];
+    const filename = `wireport-logs-${dateStr}.txt`;
+    
+    const blob = new Blob([logString], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Load logs once when profile.id changes
+  useEffect(() => {
+    fetchLogs();
+  }, [profile.id]);
+
+  // Poll logs every 2 seconds while profile is running or starting
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null;
+    
+    if (profile.status === "running" || profile.status === "starting") {
+      interval = setInterval(() => {
+        fetchLogs();
+      }, 2000);
+    }
+    
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [profile.status, profile.id]);
+
+  // Persist autoScroll preference
+  useEffect(() => {
+    localStorage.setItem("autoScrollLogs", autoScroll.toString());
+  }, [autoScroll]);
+
+  // Auto scroll to bottom
+  useEffect(() => {
+    if (autoScroll && logEndRef.current) {
+      logEndRef.current.scrollIntoView({ behavior: "auto" });
+    }
+  }, [logs, autoScroll]);
 
 
   // Sync state with profile prop when it changes
@@ -715,6 +823,119 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
               <pre className="config-pre">
                 <code>{maskPrivateKey(profile.configContent, maskKey)}</code>
               </pre>
+            </div>
+          )}
+        </div>
+
+        {/* Runtime Logs Section */}
+        <div className="details-section">
+          <div className="logs-section-header" onClick={() => setIsLogsExpanded(!isLogsExpanded)}>
+            <h3 className="section-title">
+              <ChevronRight size={14} className={`collapse-chevron ${isLogsExpanded ? "expanded" : ""}`} />
+              Runtime Logs
+            </h3>
+            <span className="logs-count-badge">
+              {logs.length} {logs.length === 1 ? "entry" : "entries"}
+            </span>
+          </div>
+
+          {isLogsExpanded && (
+            <div className="logs-card">
+              <div className="logs-header">
+                <div className="logs-title-wrapper">
+                  <Terminal size={16} className="logs-title-icon" />
+                  <span>Console Output</span>
+                </div>
+                <div className="logs-actions">
+                  <label className="auto-scroll-toggle" htmlFor="auto-scroll-cb">
+                    <input 
+                      id="auto-scroll-cb"
+                      type="checkbox"
+                      checked={autoScroll}
+                      onChange={(e) => setAutoScroll(e.target.checked)}
+                    />
+                    <span>Auto Scroll</span>
+                  </label>
+                  <select
+                    value={logFilter}
+                    onChange={(e) => setLogFilter(e.target.value as any)}
+                    className="log-filter-select"
+                  >
+                    <option value="all">All Levels</option>
+                    <option value="info">Info</option>
+                    <option value="debug">Debug</option>
+                    <option value="warn">Warn</option>
+                    <option value="error">Error</option>
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary btn-logs-action"
+                    onClick={fetchLogs}
+                    disabled={isRefreshingLogs}
+                    title="Refresh logs"
+                  >
+                    <RefreshCw size={12} className={isRefreshingLogs ? "animate-spin" : ""} />
+                    <span>Refresh</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary btn-logs-action"
+                    onClick={handleCopyLogs}
+                    disabled={logs.length === 0}
+                    title="Copy logs to clipboard"
+                  >
+                    <Copy size={12} />
+                    <span>{copiedLogs ? "Copied!" : "Copy"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary btn-logs-action"
+                    onClick={handleDownloadLogs}
+                    disabled={logs.length === 0}
+                    title="Download logs as text file"
+                  >
+                    <Download size={12} />
+                    <span>Download</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary btn-logs-action btn-danger-hover"
+                    onClick={handleClearLogs}
+                    disabled={logs.length === 0}
+                    title="Clear log buffer"
+                  >
+                    <Trash2 size={12} />
+                    <span>Clear</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className={`logs-viewer-container ${logs.length === 0 ? "empty" : ""}`} ref={logContainerRef}>
+                {logs.length === 0 ? (
+                  <div className="logs-empty">
+                    <div className="logs-empty-text-wrapper">
+                      <p className="logs-empty-primary">No logs available yet.</p>
+                      <p className="logs-empty-secondary">Start the proxy to begin collecting runtime output.</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="logs-list">
+                    {logs
+                      .filter((log) => {
+                        if (logFilter === "all") return true;
+                        return log.level.toLowerCase() === logFilter.toLowerCase();
+                      })
+                      .map((log, index) => (
+                        <div key={index} className={`log-entry ${log.level.toLowerCase()}`}>
+                          <span className="log-timestamp">{log.timestamp}</span>
+                          <span className={`log-level-badge ${log.level.toLowerCase()}`}>{log.level.toUpperCase()}</span>
+                          <span className="log-message">{log.message}</span>
+                        </div>
+                      ))}
+                    <div ref={logEndRef} />
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

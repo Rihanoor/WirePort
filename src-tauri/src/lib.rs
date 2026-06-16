@@ -311,9 +311,18 @@ fn pick_wireproxy_binary() -> Result<Option<String>, String> {
     }
 }
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::process::Child;
 use std::sync::Mutex;
+use std::io::BufRead;
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+}
 
 struct LocalIpCache {
     ip: String,
@@ -323,6 +332,104 @@ struct LocalIpCache {
 pub struct ProcessManager {
     processes: Mutex<HashMap<String, Child>>,
     local_ip_cache: Mutex<Option<LocalIpCache>>,
+    logs: Mutex<HashMap<String, VecDeque<LogEntry>>>,
+}
+
+fn classify_stderr_line(line: &str) -> &'static str {
+    let lower = line.to_lowercase();
+    if lower.contains("error")
+        || lower.contains("fatal")
+        || lower.contains("panic")
+        || lower.contains("failed")
+        || lower.contains("unable")
+        || lower.contains("cannot")
+    {
+        "ERROR"
+    } else if lower.contains("warn") || lower.contains("warning") {
+        "WARN"
+    } else {
+        "DEBUG"
+    }
+}
+
+fn strip_wireproxy_prefix(line: &str) -> &str {
+    let parts: Vec<&str> = line.splitn(4, ' ').collect();
+    if parts.len() >= 4 {
+        let lvl = parts[0].to_uppercase();
+        let date = parts[1];
+        let time = parts[2];
+        
+        let is_valid_level = lvl == "DEBUG:" || lvl == "INFO:" || lvl == "WARN:" || lvl == "ERROR:";
+        let is_valid_date = date.len() == 10 && date.chars().nth(4) == Some('/') && date.chars().nth(7) == Some('/');
+        let is_valid_time = time.len() == 8 && time.chars().nth(2) == Some(':') && time.chars().nth(5) == Some(':');
+        
+        if is_valid_level && is_valid_date && is_valid_time {
+            return parts[3];
+        }
+    }
+    line
+}
+
+fn append_log(state: &ProcessManager, profile_id: &str, level: &str, message: &str) {
+    let mut logs = state.logs.lock().unwrap();
+    let entries = logs.entry(profile_id.to_string()).or_insert_with(VecDeque::new);
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let clean_message = strip_wireproxy_prefix(message);
+    entries.push_back(LogEntry {
+        timestamp,
+        level: level.to_string(),
+        message: clean_message.to_string(),
+    });
+    if entries.len() > 1000 {
+        entries.pop_front();
+    }
+}
+
+fn handle_unexpected_exit(app_handle: &tauri::AppHandle, profile_id: &str) {
+    let state = app_handle.state::<ProcessManager>();
+    let child_opt = {
+        let mut map = state.processes.lock().unwrap();
+        map.remove(profile_id)
+    };
+    
+    if let Some(mut child) = child_opt {
+        let status = child.wait();
+        append_log(&state, profile_id, "INFO", "WireProxy process stopped");
+        append_log(&state, profile_id, "ERROR", "Process exited unexpectedly");
+        let exit_code_str = match status {
+            Ok(s) => match s.code() {
+                Some(code) => code.to_string(),
+                None => "unknown".to_string(),
+            },
+            Err(_) => "unknown".to_string(),
+        };
+        append_log(&state, profile_id, "ERROR", &format!("WireProxy exited unexpectedly (exit code: {})", exit_code_str));
+    }
+}
+
+#[tauri::command]
+fn get_profile_logs(
+    profile_id: String,
+    state: tauri::State<'_, ProcessManager>,
+) -> Result<Vec<LogEntry>, String> {
+    let logs = state.logs.lock().unwrap();
+    if let Some(entries) = logs.get(&profile_id) {
+        Ok(entries.iter().cloned().collect())
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+#[tauri::command]
+fn clear_profile_logs(
+    profile_id: String,
+    state: tauri::State<'_, ProcessManager>,
+) -> Result<(), String> {
+    let mut logs = state.logs.lock().unwrap();
+    if let Some(entries) = logs.get_mut(&profile_id) {
+        entries.clear();
+    }
+    Ok(())
 }
 
 fn get_bundled_sidecar_path(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -376,27 +483,49 @@ fn start_wireproxy(
     port: u16,
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<(), String> {
+    append_log(&state, &profile_id, "INFO", "Starting WireProxy");
+
     // 1. Resolve binary path
     let bin_path = if !binary_path.trim().is_empty() {
         std::path::PathBuf::from(&binary_path)
     } else {
-        get_bundled_sidecar_path(&app_handle)?
+        match get_bundled_sidecar_path(&app_handle) {
+            Ok(p) => p,
+            Err(e) => {
+                append_log(&state, &profile_id, "ERROR", &e);
+                append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
+                append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+                return Err(e);
+            }
+        }
     };
 
     // Verify binary path exists and is a file
     if !bin_path.exists() || !bin_path.is_file() {
-        return Err(format!("WireProxy binary not found at: {}", bin_path.display()));
+        let err_msg = format!("WireProxy binary not found at: {}", bin_path.display());
+        append_log(&state, &profile_id, "ERROR", &err_msg);
+        append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
+        append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+        return Err(err_msg);
     }
 
     // 2. Verify generated config exists
     let conf_path = std::path::Path::new(&config_path);
     if !conf_path.exists() || !conf_path.is_file() {
-        return Err(format!("Configuration file not found at: {}", config_path));
+        let err_msg = format!("Configuration file not found at: {}", config_path);
+        append_log(&state, &profile_id, "ERROR", &err_msg);
+        append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
+        append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+        return Err(err_msg);
     }
 
     // 3. Verify port is valid
     if port < 1024 {
-        return Err("Port must be between 1024 and 65535".to_string());
+        let err_msg = "Port must be between 1024 and 65535".to_string();
+        append_log(&state, &profile_id, "ERROR", &err_msg);
+        append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
+        append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+        return Err(err_msg);
     }
 
     // 4. Verify no other process is running
@@ -414,21 +543,33 @@ fn start_wireproxy(
     }
 
     if !map.is_empty() {
-        if map.contains_key(&profile_id) {
-            return Err("This profile is already running".to_string());
+        let err_msg = if map.contains_key(&profile_id) {
+            "This profile is already running".to_string()
         } else {
-            return Err("Another profile is already running. Only one profile can run at a time in V1.".to_string());
-        }
+            "Another profile is already running. Only one profile can run at a time in V1.".to_string()
+        };
+        append_log(&state, &profile_id, "ERROR", &err_msg);
+        append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
+        append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+        return Err(err_msg);
     }
 
     // 5. Spawn the child process
-    let mut child = std::process::Command::new(&bin_path)
+    let mut child = match std::process::Command::new(&bin_path)
         .arg("-c")
         .arg(&config_path)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn WireProxy process: {}", e))?;
+        .spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let err_msg = format!("Failed to spawn WireProxy process: {}", e);
+                append_log(&state, &profile_id, "ERROR", &err_msg);
+                append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
+                append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+                return Err(err_msg);
+            }
+        };
 
     // 6. Validation: Sleep 200ms and check status
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -436,16 +577,77 @@ fn start_wireproxy(
     match child.try_wait() {
         Ok(None) => {
             // Still running! Success.
-            map.insert(profile_id, child);
+            append_log(&state, &profile_id, "INFO", "WireProxy process started");
+
+            let mut child_to_insert = child;
+            let stdout = child_to_insert.stdout.take();
+            let stderr = child_to_insert.stderr.take();
+
+            map.insert(profile_id.clone(), child_to_insert);
+            drop(map);
+
+            if let Some(stdout_pipe) = stdout {
+                let app_handle_clone = app_handle.clone();
+                let profile_id_clone = profile_id.clone();
+                std::thread::spawn(move || {
+                    let reader = std::io::BufReader::new(stdout_pipe);
+                    for line in reader.lines() {
+                        if let Ok(msg) = line {
+                            let state = app_handle_clone.state::<ProcessManager>();
+                            append_log(&state, &profile_id_clone, "INFO", &msg);
+                        }
+                    }
+                    handle_unexpected_exit(&app_handle_clone, &profile_id_clone);
+                });
+            }
+
+            if let Some(stderr_pipe) = stderr {
+                let app_handle_clone = app_handle.clone();
+                let profile_id_clone = profile_id.clone();
+                std::thread::spawn(move || {
+                    let reader = std::io::BufReader::new(stderr_pipe);
+                    for line in reader.lines() {
+                        if let Ok(msg) = line {
+                            let state = app_handle_clone.state::<ProcessManager>();
+                            let level = classify_stderr_line(&msg);
+                            append_log(&state, &profile_id_clone, level, &msg);
+                        }
+                    }
+                    handle_unexpected_exit(&app_handle_clone, &profile_id_clone);
+                });
+            }
+
             Ok(())
         }
         Ok(Some(status)) => {
-            // Exited immediately. Capture stderr.
+            // Exited immediately. Capture stdout and stderr.
+            let mut stdout_content = String::new();
+            if let Some(mut stdout) = child.stdout.take() {
+                use std::io::Read;
+                let _ = stdout.read_to_string(&mut stdout_content);
+            }
             let mut stderr_content = String::new();
             if let Some(mut stderr) = child.stderr.take() {
                 use std::io::Read;
                 let _ = stderr.read_to_string(&mut stderr_content);
             }
+
+            // Log stdout and stderr
+            for line in stdout_content.lines() {
+                append_log(&state, &profile_id, "INFO", line);
+            }
+            for line in stderr_content.lines() {
+                let level = classify_stderr_line(line);
+                append_log(&state, &profile_id, level, line);
+            }
+
+            append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
+            let exit_code_str = match status.code() {
+                Some(code) => code.to_string(),
+                None => "unknown".to_string(),
+            };
+            append_log(&state, &profile_id, "ERROR", &format!("WireProxy exited unexpectedly (exit code: {})", exit_code_str));
+
             let stderr_msg = stderr_content.trim();
             if stderr_msg.is_empty() {
                 Err(format!("WireProxy exited immediately with status: {}", status))
@@ -454,7 +656,11 @@ fn start_wireproxy(
             }
         }
         Err(e) => {
-            Err(format!("Failed to check WireProxy status after spawn: {}", e))
+            let err_msg = format!("Failed to check WireProxy status after spawn: {}", e);
+            append_log(&state, &profile_id, "ERROR", &err_msg);
+            append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
+            append_log(&state, &profile_id, "ERROR", "WireProxy exited unexpectedly (exit code: unknown)");
+            Err(err_msg)
         }
     }
 }
@@ -464,10 +670,15 @@ fn stop_wireproxy(
     profile_id: String,
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<(), String> {
-    let mut map = state.processes.lock().unwrap();
-    if let Some(mut child) = map.remove(&profile_id) {
+    let child_opt = {
+        let mut map = state.processes.lock().unwrap();
+        map.remove(&profile_id)
+    };
+
+    if let Some(mut child) = child_opt {
         let _ = child.kill();
         let _ = child.wait();
+        append_log(&state, &profile_id, "INFO", "WireProxy process stopped");
     }
     Ok(())
 }
@@ -482,17 +693,13 @@ fn get_profile_status(
         match child.try_wait() {
             Ok(None) => Ok("running".to_string()),
             Ok(Some(status)) => {
-                map.remove(&profile_id);
                 if status.success() {
                     Ok("stopped".to_string())
                 } else {
                     Ok("error".to_string())
                 }
             }
-            Err(_) => {
-                map.remove(&profile_id);
-                Ok("error".to_string())
-            }
+            Err(_) => Ok("error".to_string()),
         }
     } else {
         Ok("stopped".to_string())
@@ -713,6 +920,7 @@ pub fn run() {
         .manage(ProcessManager {
             processes: Mutex::new(HashMap::new()),
             local_ip_cache: Mutex::new(None),
+            logs: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             pick_parse_and_validate_file,
@@ -727,7 +935,9 @@ pub fn run() {
             stop_wireproxy,
             get_profile_status,
             test_proxy_connection,
-            get_local_public_ip
+            get_local_public_ip,
+            get_profile_logs,
+            clear_profile_logs
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

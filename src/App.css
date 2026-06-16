@@ -1636,4 +1636,275 @@
   font-family: var(--font-mono);
 }
 
+/* Runtime Logs Section */
+.logs-card {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.logs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  background-color: rgba(0, 0, 0, 0.1);
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.logs-title-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.logs-title-icon {
+  color: var(--primary);
+}
+
+.logs-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.auto-scroll-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  margin-right: 6px;
+}
+
+.auto-scroll-toggle input[type="checkbox"] {
+  accent-color: var(--primary);
+  width: 13px;
+  height: 13px;
+  cursor: pointer;
+}
+
+.btn-logs-action {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background-color: var(--bg-app);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.log-filter-select {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background-color: var(--bg-app);
+  color: var(--text-secondary);
+  outline: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.log-filter-select:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.log-filter-select option {
+  background-color: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+.btn-logs-action:hover:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.btn-logs-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-danger-hover:hover:not(:disabled) {
+  border-color: rgba(239, 68, 68, 0.3) !important;
+  background-color: rgba(239, 68, 68, 0.08) !important;
+  color: var(--danger) !important;
+}
+
+.logs-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+
+.logs-section-header .section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-left: none;
+  padding-left: 0;
+  margin: 0;
+}
+
+.collapse-chevron {
+  color: var(--text-secondary);
+  transition: transform 0.2s ease;
+}
+
+.collapse-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.logs-count-badge {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background-color: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 20px;
+}
+
+.logs-viewer-container {
+  min-height: 220px;
+  max-height: 400px;
+  height: auto;
+  overflow-y: auto;
+  background-color: rgba(0, 0, 0, 0.2);
+  padding: 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.logs-viewer-container.empty {
+  min-height: 100px;
+  height: 100px;
+}
+
+.logs-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--font-sans);
+  text-align: center;
+}
+
+.logs-empty-text-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.logs-empty-primary {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.logs-empty-secondary {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+
+.logs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.log-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  word-break: break-all;
+}
+
+.log-timestamp {
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.log-level-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-align: center;
+  min-width: 50px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* Level Badges */
+.log-level-badge.info {
+  background-color: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.log-level-badge.error {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.log-level-badge.warn {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+.log-level-badge.debug {
+  background-color: rgba(71, 85, 105, 0.08);
+  color: #64748b;
+  border: 1px solid rgba(71, 85, 105, 0.1);
+}
+
+/* Log messages colors */
+.log-entry.info .log-message {
+  color: #e2e8f0;
+}
+
+.log-entry.error .log-message {
+  color: #fca5a5;
+}
+
+.log-entry.warn .log-message {
+  color: #fde047;
+}
+
+.log-entry.debug .log-message {
+  color: var(--text-muted);
+}
+
 
