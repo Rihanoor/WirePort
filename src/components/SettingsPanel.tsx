@@ -9,12 +9,14 @@ interface SettingsPanelProps {
 interface AppSettings {
   wireproxyBinaryPath: string;
   hideDockIcon: boolean;
+  disableLogs: boolean;
 }
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({ showToast }) => {
   const [settings, setSettings] = useState<AppSettings>({
     wireproxyBinaryPath: "",
     hideDockIcon: false,
+    disableLogs: false,
   });
   const [loading, setLoading] = useState(true);
 
@@ -25,6 +27,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ showToast }) => {
         setSettings({
           wireproxyBinaryPath: res.wireproxyBinaryPath || "",
           hideDockIcon: res.hideDockIcon || false,
+          disableLogs: res.disableLogs || false,
         });
       } catch (err) {
         console.error("Failed to load settings:", err);
@@ -49,6 +52,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ showToast }) => {
 
   const handleToggleHideDock = (checked: boolean) => {
     const next = { ...settings, hideDockIcon: checked };
+    handleSave(next);
+  };
+
+  const handleToggleDisableLogs = (checked: boolean) => {
+    const next = { ...settings, disableLogs: checked };
     handleSave(next);
   };
 
@@ -139,6 +147,67 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ showToast }) => {
                         transition: ".3s",
                         borderRadius: "50%",
                         transform: settings.hideDockIcon ? "translateX(20px)" : "translateX(0)"
+                      }}
+                    />
+                  </span>
+                </label>
+              </div>
+
+              {/* Disable Runtime Logging Preference */}
+              <div 
+                className="form-group"
+                style={{
+                  display: "flex",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "16px 0",
+                  borderBottom: "1px solid var(--border)",
+                  gap: "24px"
+                }}
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px", flex: 1 }}>
+                  <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-primary)" }}>
+                    Disable Runtime Logging
+                  </span>
+                  <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+                    Turns off the console logging of WireProxy stdout and stderr. Can improve performance and reduce memory usage.
+                  </span>
+                </div>
+                
+                <label className="switch-toggle" style={{ position: "relative", display: "inline-block", width: "40px", height: "20px" }}>
+                  <input 
+                    type="checkbox" 
+                    checked={settings.disableLogs}
+                    onChange={(e) => handleToggleDisableLogs(e.target.checked)}
+                    style={{ opacity: 0, width: 0, height: 0 }}
+                  />
+                  <span 
+                    className="slider" 
+                    style={{
+                      position: "absolute",
+                      cursor: "pointer",
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      backgroundColor: settings.disableLogs ? "var(--primary)" : "#2a2f45",
+                      transition: ".3s",
+                      borderRadius: "20px",
+                    }}
+                  >
+                    <span 
+                      style={{
+                        position: "absolute",
+                        content: '""',
+                        height: "14px",
+                        width: "14px",
+                        left: "3px",
+                        bottom: "3px",
+                        backgroundColor: "white",
+                        transition: ".3s",
+                        borderRadius: "50%",
+                        transform: settings.disableLogs ? "translateX(20px)" : "translateX(0)"
                       }}
                     />
                   </span>

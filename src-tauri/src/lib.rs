@@ -316,6 +316,7 @@ fn load_generated_config(
 pub struct AppSettings {
     wireproxy_binary_path: String,
     hide_dock_icon: Option<bool>,
+    disable_logs: Option<bool>,
 }
 
 #[tauri::command]
@@ -330,6 +331,7 @@ fn load_settings(app_handle: tauri::AppHandle) -> Result<AppSettings, String> {
         return Ok(AppSettings {
             wireproxy_binary_path: String::new(),
             hide_dock_icon: Some(false),
+            disable_logs: Some(false),
         });
     }
 
@@ -356,6 +358,16 @@ fn save_settings(app_handle: tauri::AppHandle, settings: AppSettings) -> Result<
 
     std::fs::write(&file_path, content)
         .map_err(|e| format!("Failed to write settings: {}", e))?;
+
+    // Update disable_logs in ProcessManager
+    let disable = settings.disable_logs.unwrap_or(false);
+    if let Some(state) = app_handle.try_state::<ProcessManager>() {
+        state.disable_logs.store(disable, std::sync::atomic::Ordering::Relaxed);
+        if disable {
+            let mut logs_map = state.logs.lock().unwrap();
+            logs_map.clear();
+        }
+    }
 
     // Dynamically toggle activation policy on macOS
     #[cfg(target_os = "macos")]
@@ -429,6 +441,7 @@ pub struct ProcessManager {
     logs: Mutex<HashMap<String, VecDeque<LogEntry>>>,
     worker_counts: Mutex<HashMap<String, WorkerStartupCount>>,
     selected_profile_id: Mutex<Option<String>>,
+    pub disable_logs: std::sync::atomic::AtomicBool,
 }
 
 fn classify_stderr_line(line: &str) -> &'static str {
@@ -492,6 +505,9 @@ fn parse_worker_log(message: &str) -> Option<WorkerType> {
 }
 
 fn append_log(state: &ProcessManager, profile_id: &str, level: &str, message: &str) {
+    if state.disable_logs.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let clean_message = strip_wireproxy_prefix(message);
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -1720,6 +1736,7 @@ fn connect_current_profile(app_handle: &tauri::AppHandle) -> Result<(), String> 
     let settings = load_settings(app_handle.clone()).unwrap_or(AppSettings {
         wireproxy_binary_path: String::new(),
         hide_dock_icon: Some(false),
+        disable_logs: Some(false),
     });
 
     let config_path = app_dir
@@ -1777,6 +1794,7 @@ pub fn run() {
             logs: Mutex::new(HashMap::new()),
             worker_counts: Mutex::new(HashMap::new()),
             selected_profile_id: Mutex::new(None),
+            disable_logs: std::sync::atomic::AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             pick_parse_and_validate_file,
@@ -1797,6 +1815,23 @@ pub fn run() {
             set_selected_profile
         ])
         .setup(|app| {
+            // Load settings to set initial state of disable_logs
+            if let Some(state) = app.try_state::<ProcessManager>() {
+                if let Ok(app_dir) = app.path().app_data_dir() {
+                    let file_path = app_dir.join("settings.json");
+                    if file_path.exists() {
+                        if let Ok(content) = std::fs::read_to_string(&file_path) {
+                            if let Ok(settings) = serde_json::from_str::<AppSettings>(&content) {
+                                state.disable_logs.store(
+                                    settings.disable_logs.unwrap_or(false),
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             let icon_bytes = include_bytes!("../icons/32x32.png");
             let icon = tauri::image::Image::from_bytes(icon_bytes)?;
 

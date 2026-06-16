@@ -59,6 +59,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
 
   // Logs State
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logsDisabled, setLogsDisabled] = useState<boolean>(false);
   const [autoScroll, setAutoScroll] = useState<boolean>(() => {
     const saved = localStorage.getItem("autoScrollLogs");
     return saved !== null ? saved === "true" : true;
@@ -122,16 +123,33 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  // Check if logs are disabled
+  useEffect(() => {
+    const checkSettings = async () => {
+      try {
+        const res = await invoke<any>("load_settings");
+        setLogsDisabled(res.disableLogs || false);
+      } catch (err) {
+        console.error("Failed to load settings in ProfileDetails:", err);
+      }
+    };
+    checkSettings();
+  }, [activeTab]);
+
   // Load logs once when profile.id changes
   useEffect(() => {
-    fetchLogs();
-  }, [profile.id]);
+    if (!logsDisabled) {
+      fetchLogs();
+    } else {
+      setLogs([]);
+    }
+  }, [profile.id, logsDisabled]);
 
   // Poll logs every 2 seconds while profile is running or starting
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | null = null;
     
-    if (profile.status === "running" || profile.status === "starting") {
+    if ((profile.status === "running" || profile.status === "starting") && !logsDisabled) {
       interval = setInterval(() => {
         fetchLogs();
       }, 2000);
@@ -140,7 +158,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [profile.status, profile.id]);
+  }, [profile.status, profile.id, logsDisabled]);
 
   // Persist autoScroll preference
   useEffect(() => {
@@ -1185,12 +1203,13 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                   <span>Console Output</span>
                 </div>
                 <div className="logs-actions">
-                  <label className="auto-scroll-toggle" htmlFor="auto-scroll-cb">
+                  <label className="auto-scroll-toggle" htmlFor="auto-scroll-cb" style={{ opacity: logsDisabled ? 0.5 : 1 }}>
                     <input 
                       id="auto-scroll-cb"
                       type="checkbox"
                       checked={autoScroll}
                       onChange={(e) => setAutoScroll(e.target.checked)}
+                      disabled={logsDisabled}
                     />
                     <span>Auto Scroll</span>
                   </label>
@@ -1198,6 +1217,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                     value={logFilter}
                     onChange={(e) => setLogFilter(e.target.value as any)}
                     className="log-filter-select"
+                    disabled={logsDisabled}
                   >
                     <option value="all">All Levels</option>
                     <option value="info">Info</option>
@@ -1209,7 +1229,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                     type="button"
                     className="btn btn-sm btn-secondary btn-logs-action"
                     onClick={fetchLogs}
-                    disabled={isRefreshingLogs}
+                    disabled={isRefreshingLogs || logsDisabled}
                     title="Refresh logs"
                   >
                     <RefreshCw size={12} className={isRefreshingLogs ? "animate-spin" : ""} />
@@ -1219,7 +1239,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                     type="button"
                     className="btn btn-sm btn-secondary btn-logs-action"
                     onClick={handleCopyLogs}
-                    disabled={logs.length === 0}
+                    disabled={logs.length === 0 || logsDisabled}
                     title="Copy logs to clipboard"
                   >
                     <Copy size={12} />
@@ -1229,7 +1249,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                     type="button"
                     className="btn btn-sm btn-secondary btn-logs-action"
                     onClick={handleDownloadLogs}
-                    disabled={logs.length === 0}
+                    disabled={logs.length === 0 || logsDisabled}
                     title="Download logs as text file"
                   >
                     <Download size={12} />
@@ -1239,7 +1259,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                     type="button"
                     className="btn btn-sm btn-secondary btn-logs-action btn-danger-hover"
                     onClick={handleClearLogs}
-                    disabled={logs.length === 0}
+                    disabled={logs.length === 0 || logsDisabled}
                     title="Clear log buffer"
                   >
                     <Trash2 size={12} />
@@ -1248,8 +1268,15 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                 </div>
               </div>
 
-              <div className={`logs-viewer-container ${logs.length === 0 ? "empty" : ""}`} ref={logContainerRef}>
-                {logs.length === 0 ? (
+              <div className={`logs-viewer-container ${logs.length === 0 || logsDisabled ? "empty" : ""}`} ref={logContainerRef}>
+                {logsDisabled ? (
+                  <div className="logs-empty">
+                    <div className="logs-empty-text-wrapper">
+                      <p className="logs-empty-primary">Logging is disabled</p>
+                      <p className="logs-empty-secondary">You can enable runtime logs under Application Settings.</p>
+                    </div>
+                  </div>
+                ) : logs.length === 0 ? (
                   <div className="logs-empty">
                     <div className="logs-empty-text-wrapper">
                       <p className="logs-empty-primary">No logs available yet.</p>

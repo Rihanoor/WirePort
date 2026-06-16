@@ -1,10 +1,15 @@
 [package]
 name = "wireport"
 version = "0.1.0"
-description = "Lightweight desktop GUI client converting WireGuard profiles into local SOCKS5/HTTP proxies"
+description = "WireGuard to SOCKS5/HTTP proxy desktop app for macOS, Windows, and Linux"
 authors = ["Rihanoor <rihanoor@lightib.com>"]
 license = "MIT"
 edition = "2021"
+homepage = "https://github.com/rihanoor/WirePort"
+repository = "https://github.com/rihanoor/WirePort"
+readme = "../README.md"
+keywords = ["wireguard", "socks5", "proxy", "tauri", "desktop"]
+categories = ["gui", "network-programming"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -31,6 +36,5 @@ serde_json = "1"
 rfd = "0.15"
 reqwest = { version = "0.13.4", features = ["socks", "json"] }
 chrono = "0.4"
-
 
 
