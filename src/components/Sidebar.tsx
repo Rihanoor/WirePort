@@ -29,7 +29,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
         <div className="brand-info">
           <span className="brand-name">WirePort</span>
-          <span className="brand-tag">control center</span>
+          <span className="brand-tag">proxy bridge</span>
         </div>
       </div>
 
@@ -37,7 +37,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="sidebar-actions">
         <button className="btn btn-primary btn-full" onClick={onImportClick}>
           <Plus size={16} />
-          <span>Import Profile</span>
+          <span>Import</span>
         </button>
       </div>
 

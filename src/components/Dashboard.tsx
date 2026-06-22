@@ -71,9 +71,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
       {/* Top Banner / Hero */}
       <div className="dashboard-hero">
         <div className="hero-content">
-          <h1 className="hero-title font-sans">WirePort Control Center</h1>
+          <h1 className="hero-title">Overview</h1>
           <p className="hero-subtitle">
-            Manage your WireGuard tunnels, local socks5/http proxy runtimes, and traffic statistics.
+            Manage WireGuard tunnels and the local proxy endpoints they expose.
           </p>
         </div>
       </div>
@@ -82,34 +82,34 @@ export const Dashboard: React.FC<DashboardProps> = ({
       <div className="dashboard-stats-grid">
         <div className="dashboard-stat-card">
           <div className="stat-card-header">
-            <span className="stat-label">Total Profiles</span>
-            <Shield size={20} className="stat-icon" />
+            <span className="stat-label">Profiles</span>
+            <Shield size={18} className="stat-icon" />
           </div>
-          <span className="stat-value font-mono">{totalProfiles}</span>
+          <span className="stat-value">{totalProfiles}</span>
         </div>
 
         <div className="dashboard-stat-card">
           <div className="stat-card-header">
-            <span className="stat-label">Running Profiles</span>
+            <span className="stat-label">Active</span>
             <span className={`status-indicator ${runningProfiles > 0 ? "running" : "stopped"}`} />
           </div>
-          <span className="stat-value font-mono text-primary">{runningProfiles}</span>
+          <span className="stat-value text-primary">{runningProfiles}</span>
         </div>
 
         <div className="dashboard-stat-card">
           <div className="stat-card-header">
-            <span className="stat-label">SOCKS5 Proxies</span>
-            <Network size={20} className="stat-icon" />
+            <span className="stat-label">SOCKS5</span>
+            <Network size={18} className="stat-icon" />
           </div>
-          <span className="stat-value font-mono">{socks5Profiles}</span>
+          <span className="stat-value">{socks5Profiles}</span>
         </div>
 
         <div className="dashboard-stat-card">
           <div className="stat-card-header">
-            <span className="stat-label">HTTP Proxies</span>
-            <Network size={20} className="stat-icon" />
+            <span className="stat-label">HTTP</span>
+            <Network size={18} className="stat-icon" />
           </div>
-          <span className="stat-value font-mono">{httpProfiles}</span>
+          <span className="stat-value">{httpProfiles}</span>
         </div>
       </div>
 
@@ -118,12 +118,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
         {/* Left Column: Recent Profiles */}
         <div className="dashboard-col-left">
           <div className="dashboard-section-header">
-            <h2 className="dashboard-section-title">Recent Connections</h2>
+            <h2 className="dashboard-section-title">Recent</h2>
           </div>
 
           <div className="recent-profiles-list">
             {recentProfiles.length === 0 ? (
-              <div className="recent-empty">No active profiles recently used.</div>
+              <div className="recent-empty">No profiles used yet.</div>
             ) : (
               recentProfiles.map(profile => (
                 <div 
@@ -135,15 +135,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <span className={`status-indicator-dot ${profile.status}`} />
                     <div className="recent-profile-info">
                       <span className="recent-profile-name">{profile.name}</span>
-                      <span className="recent-profile-endpoint font-mono">{profile.endpoint}</span>
+                      <span className="recent-profile-endpoint">{profile.endpoint}</span>
                     </div>
                   </div>
 
                   <div className="recent-card-right">
-                    <span className="recent-profile-type-badge font-mono">
+                    <span className="recent-profile-type-badge">
                       {profile.proxyType.toUpperCase()}:{profile.port}
                     </span>
-                    <span className="recent-profile-time font-mono">
+                    <span className="recent-profile-time">
                       <Clock size={12} className="time-icon" />
                       {formatRelativeTime(profile.lastConnectedAt)}
                     </span>
@@ -159,45 +159,45 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <div className="dashboard-col-right">
           {/* System Status Card */}
           <div className="status-system-card">
-            <h3 className="card-sub-title">System Status</h3>
+            <h3 className="card-sub-title">Status</h3>
             <div className="status-rows">
               <div className="status-row-item">
                 <div className="status-row-left">
                   <Cpu size={16} className="status-row-icon" />
-                  <span>WireProxy Engine</span>
+                  <span>WireProxy engine</span>
                 </div>
-                <span className="status-row-badge active font-mono">
-                  <CheckCircle size={10} style={{ marginRight: "4px" }} /> Available
+                <span className="status-row-badge active">
+                  <CheckCircle size={10} /> Ready
                 </span>
               </div>
 
               <div className="status-row-item">
                 <div className="status-row-left">
                   <Activity size={16} className="status-row-icon" />
-                  <span>Health Checks</span>
+                  <span>Health checks</span>
                 </div>
-                <span className="status-row-badge active font-mono">
-                  <CheckCircle size={10} style={{ marginRight: "4px" }} /> Active
+                <span className="status-row-badge active">
+                  <CheckCircle size={10} /> On
                 </span>
               </div>
 
               <div className="status-row-item">
                 <div className="status-row-left">
                   <FileText size={16} className="status-row-icon" />
-                  <span>Runtime Logs</span>
+                  <span>Runtime logs</span>
                 </div>
-                <span className="status-row-badge active font-mono">
-                  <CheckCircle size={10} style={{ marginRight: "4px" }} /> Active
+                <span className="status-row-badge active">
+                  <CheckCircle size={10} /> On
                 </span>
               </div>
 
               <div className="status-row-item">
                 <div className="status-row-left">
                   <Activity size={16} className="status-row-icon" />
-                  <span>Live Statistics</span>
+                  <span>Live statistics</span>
                 </div>
-                <span className="status-row-badge active font-mono">
-                  <CheckCircle size={10} style={{ marginRight: "4px" }} /> Active
+                <span className="status-row-badge active">
+                  <CheckCircle size={10} /> On
                 </span>
               </div>
             </div>
@@ -205,11 +205,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
           {/* Quick Actions */}
           <div className="quick-actions-card">
-            <h3 className="card-sub-title">Quick Actions</h3>
+            <h3 className="card-sub-title">Quick actions</h3>
             <div className="quick-actions-buttons">
               <button className="btn btn-primary btn-full btn-action-dashboard" onClick={onImportClick}>
                 <Plus size={16} />
-                <span>Import WireGuard Config</span>
+                <span>Import .conf</span>
               </button>
             </div>
           </div>

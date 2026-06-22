@@ -36,24 +36,13 @@ export const Header: React.FC<HeaderProps> = ({ activeProfile, onStopClick }) =>
 
   return (
     <header className="app-header" onDoubleClick={handleDoubleClick}>
-      <div className="header-top-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
+      <div className="header-top-row">
         <h2 className="page-title">Dashboard</h2>
         {isOnline && onStopClick && (
-          <button 
+          <button
             onClick={onStopClick}
             className="btn btn-danger btn-sm"
-            style={{ 
-              padding: "6px 14px", 
-              fontSize: "12px", 
-              fontWeight: 600, 
-              borderRadius: "8px",
-              cursor: "pointer",
-              transition: "all 0.15s ease",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px"
-            }}
-            title="Quick Stop active proxy tunnel"
+            title="Stop the active tunnel"
           >
             <Square size={12} fill="currentColor" />
             <span>Stop</span>
@@ -64,12 +53,12 @@ export const Header: React.FC<HeaderProps> = ({ activeProfile, onStopClick }) =>
         {isOnline ? (
           <div className="status-pill connected">
             <Shield size={14} />
-            <span>Secured Tunnel Online ({activeProfile.name})</span>
+            <span>Tunnel live · {activeProfile.name}</span>
           </div>
         ) : (
           <div className="status-pill disconnected">
             <ShieldAlert size={14} />
-            <span>Secured Tunnel Offline</span>
+            <span>Tunnel offline</span>
           </div>
         )}
         <div className="network-pill">

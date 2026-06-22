@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use parking_lot::Mutex;
 use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
@@ -169,6 +170,12 @@ fn save_profiles(app_handle: tauri::AppHandle, profiles_json: String) -> Result<
     let file_path = app_dir.join("profiles.json");
     std::fs::write(&file_path, profiles_json)
         .map_err(|e| format!("Failed to write profiles: {}", e))?;
+
+    // Keep in-memory cache in sync with disk so the tray/connect handlers
+    // reflect the latest profile list without re-reading the file.
+    if let Some(state) = app_handle.try_state::<ProcessManager>() {
+        invalidate_profiles_cache(&state);
+    }
 
     Ok(())
 }
@@ -364,7 +371,7 @@ fn save_settings(app_handle: tauri::AppHandle, settings: AppSettings) -> Result<
     if let Some(state) = app_handle.try_state::<ProcessManager>() {
         state.disable_logs.store(disable, std::sync::atomic::Ordering::Relaxed);
         if disable {
-            let mut logs_map = state.logs.lock().unwrap();
+            let mut logs_map = state.logs.lock();
             logs_map.clear();
         }
     }
@@ -387,7 +394,6 @@ fn save_settings(app_handle: tauri::AppHandle, settings: AppSettings) -> Result<
 use std::collections::{HashMap, VecDeque};
 
 use std::io::BufRead;
-use std::sync::Mutex;
 
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -441,6 +447,11 @@ pub struct ProcessManager {
     logs: Mutex<HashMap<String, VecDeque<LogEntry>>>,
     worker_counts: Mutex<HashMap<String, WorkerStartupCount>>,
     selected_profile_id: Mutex<Option<String>>,
+    /// In-memory cache of profiles.json so the tray and connect handlers
+    /// don't re-read the file on every status update.
+    profiles_cache: Mutex<Option<Vec<serde_json::Value>>>,
+    /// Shared HTTP client reused across stats polling and health checks.
+    http_client: reqwest::Client,
     pub disable_logs: std::sync::atomic::AtomicBool,
 }
 
@@ -512,7 +523,7 @@ fn append_log(state: &ProcessManager, profile_id: &str, level: &str, message: &s
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     if let Some(worker_type) = parse_worker_log(clean_message) {
-        let mut counts_map = state.worker_counts.lock().unwrap();
+        let mut counts_map = state.worker_counts.lock();
         let counts = counts_map.entry(profile_id.to_string()).or_default();
         match worker_type {
             WorkerType::Encryption => counts.encryption += 1,
@@ -525,7 +536,7 @@ fn append_log(state: &ProcessManager, profile_id: &str, level: &str, message: &s
         );
         drop(counts_map);
 
-        let mut logs = state.logs.lock().unwrap();
+        let mut logs = state.logs.lock();
         let entries = logs.entry(profile_id.to_string()).or_default();
 
         let mut found_idx = None;
@@ -557,7 +568,7 @@ fn append_log(state: &ProcessManager, profile_id: &str, level: &str, message: &s
             }
         }
     } else {
-        let mut logs = state.logs.lock().unwrap();
+        let mut logs = state.logs.lock();
         let entries = logs.entry(profile_id.to_string()).or_default();
         entries.push_back(LogEntry {
             timestamp,
@@ -570,12 +581,27 @@ fn append_log(state: &ProcessManager, profile_id: &str, level: &str, message: &s
     }
 }
 
+/// Record a startup failure for a profile in a consistent shape and return it
+/// as the command's `Err`. Emits the same trio of log lines every start-time
+/// failure path in `start_wireproxy` expects, so each call site stays one line.
+fn fail_start(state: &ProcessManager, profile_id: &str, message: String) -> String {
+    append_log(state, profile_id, "ERROR", &message);
+    append_log(state, profile_id, "ERROR", "Process exited unexpectedly");
+    append_log(
+        state,
+        profile_id,
+        "ERROR",
+        "WireProxy exited unexpectedly (exit code: unknown)",
+    );
+    message
+}
+
 fn handle_unexpected_exit(app_handle: &tauri::AppHandle, profile_id: &str) {
     let state = app_handle.state::<ProcessManager>();
 
     // Check if the process is actually dead before removing it from the map
     let is_dead = {
-        let mut map = state.processes.lock().unwrap();
+        let mut map = state.processes.lock();
         if let Some(proc) = map.get_mut(profile_id) {
             match proc.child.try_wait() {
                 Ok(None) => false, // Still running!
@@ -591,7 +617,7 @@ fn handle_unexpected_exit(app_handle: &tauri::AppHandle, profile_id: &str) {
     }
 
     let child_opt = {
-        let mut map = state.processes.lock().unwrap();
+        let mut map = state.processes.lock();
         map.remove(profile_id)
     };
 
@@ -634,7 +660,7 @@ fn get_profile_logs(
     profile_id: String,
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<Vec<LogEntry>, String> {
-    let logs = state.logs.lock().unwrap();
+    let logs = state.logs.lock();
     if let Some(entries) = logs.get(&profile_id) {
         Ok(entries.iter().cloned().collect())
     } else {
@@ -647,7 +673,7 @@ fn clear_profile_logs(
     profile_id: String,
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<(), String> {
-    let mut logs = state.logs.lock().unwrap();
+    let mut logs = state.logs.lock();
     if let Some(entries) = logs.get_mut(&profile_id) {
         entries.clear();
     }
@@ -729,13 +755,13 @@ fn start_wireproxy(
 ) -> Result<(), String> {
     // Clear worker counts for this profile
     {
-        let mut counts = state.worker_counts.lock().unwrap();
+        let mut counts = state.worker_counts.lock();
         counts.insert(profile_id.clone(), WorkerStartupCount::default());
     }
 
     // Clear stats cache entry when starting
     {
-        let mut stats_map = state.stats_cache.lock().unwrap();
+        let mut stats_map = state.stats_cache.lock();
         stats_map.remove(&profile_id);
     }
 
@@ -747,65 +773,31 @@ fn start_wireproxy(
     } else {
         match get_bundled_sidecar_path(&app_handle) {
             Ok(p) => p,
-            Err(e) => {
-                append_log(&state, &profile_id, "ERROR", &e);
-                append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-                append_log(
-                    &state,
-                    &profile_id,
-                    "ERROR",
-                    "WireProxy exited unexpectedly (exit code: unknown)",
-                );
-                return Err(e);
-            }
+            Err(e) => return Err(fail_start(&state, &profile_id, e)),
         }
     };
 
     // Verify binary path exists and is a file
     if !bin_path.exists() || !bin_path.is_file() {
         let err_msg = format!("WireProxy binary not found at: {}", bin_path.display());
-        append_log(&state, &profile_id, "ERROR", &err_msg);
-        append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-        append_log(
-            &state,
-            &profile_id,
-            "ERROR",
-            "WireProxy exited unexpectedly (exit code: unknown)",
-        );
-        return Err(err_msg);
+        return Err(fail_start(&state, &profile_id, err_msg));
     }
 
     // 2. Verify generated config exists
     let conf_path = std::path::Path::new(&config_path);
     if !conf_path.exists() || !conf_path.is_file() {
         let err_msg = format!("Configuration file not found at: {}", config_path);
-        append_log(&state, &profile_id, "ERROR", &err_msg);
-        append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-        append_log(
-            &state,
-            &profile_id,
-            "ERROR",
-            "WireProxy exited unexpectedly (exit code: unknown)",
-        );
-        return Err(err_msg);
+        return Err(fail_start(&state, &profile_id, err_msg));
     }
 
     // 3. Verify port is valid
     if port < 1024 {
         let err_msg = "Port must be between 1024 and 65535".to_string();
-        append_log(&state, &profile_id, "ERROR", &err_msg);
-        append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-        append_log(
-            &state,
-            &profile_id,
-            "ERROR",
-            "WireProxy exited unexpectedly (exit code: unknown)",
-        );
-        return Err(err_msg);
+        return Err(fail_start(&state, &profile_id, err_msg));
     }
 
     // 4. Verify no other process is running
-    let mut map = state.processes.lock().unwrap();
+    let mut map = state.processes.lock();
 
     // Clean up dead processes first
     let mut dead_keys = Vec::new();
@@ -830,15 +822,7 @@ fn start_wireproxy(
             "Another profile is already running. Only one profile can run at a time in V1."
                 .to_string()
         };
-        append_log(&state, &profile_id, "ERROR", &err_msg);
-        append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-        append_log(
-            &state,
-            &profile_id,
-            "ERROR",
-            "WireProxy exited unexpectedly (exit code: unknown)",
-        );
-        return Err(err_msg);
+        return Err(fail_start(&state, &profile_id, err_msg));
     }
 
     // Allocate dynamic info port
@@ -846,15 +830,7 @@ fn start_wireproxy(
         Some(p) => p,
         None => {
             let err_msg = "Failed to allocate dynamic info port".to_string();
-            append_log(&state, &profile_id, "ERROR", &err_msg);
-            append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-            append_log(
-                &state,
-                &profile_id,
-                "ERROR",
-                "WireProxy exited unexpectedly (exit code: unknown)",
-            );
-            return Err(err_msg);
+            return Err(fail_start(&state, &profile_id, err_msg));
         }
     };
 
@@ -871,15 +847,7 @@ fn start_wireproxy(
         Ok(c) => c,
         Err(e) => {
             let err_msg = format!("Failed to spawn WireProxy process: {}", e);
-            append_log(&state, &profile_id, "ERROR", &err_msg);
-            append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-            append_log(
-                &state,
-                &profile_id,
-                "ERROR",
-                "WireProxy exited unexpectedly (exit code: unknown)",
-            );
-            return Err(err_msg);
+            return Err(fail_start(&state, &profile_id, err_msg));
         }
     };
 
@@ -1002,16 +970,9 @@ fn start_wireproxy(
         Err(e) => {
             drop(map); // Release lock immediately
             let err_msg = format!("Failed to check WireProxy status after spawn: {}", e);
-            append_log(&state, &profile_id, "ERROR", &err_msg);
-            append_log(&state, &profile_id, "ERROR", "Process exited unexpectedly");
-            append_log(
-                &state,
-                &profile_id,
-                "ERROR",
-                "WireProxy exited unexpectedly (exit code: unknown)",
-            );
+            let logged = fail_start(&state, &profile_id, err_msg);
             let _ = update_tray_menu(&app_handle, "Error");
-            Err(err_msg)
+            Err(logged)
         }
     }
 }
@@ -1023,10 +984,10 @@ fn stop_wireproxy(
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<(), String> {
     let proc_opt = {
-        let mut map = state.processes.lock().unwrap();
+        let mut map = state.processes.lock();
         // Clear stats cache when stopping
         {
-            let mut stats_map = state.stats_cache.lock().unwrap();
+            let mut stats_map = state.stats_cache.lock();
             stats_map.remove(&profile_id);
         }
         map.remove(&profile_id)
@@ -1056,7 +1017,7 @@ fn get_profile_status(
     profile_id: String,
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<String, String> {
-    let mut map = state.processes.lock().unwrap();
+    let mut map = state.processes.lock();
     if let Some(proc) = map.get_mut(&profile_id) {
         match proc.child.try_wait() {
             Ok(None) => Ok("running".to_string()),
@@ -1080,7 +1041,7 @@ async fn get_proxy_stats(
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<ProxyStats, String> {
     let (info_port, started_at) = {
-        let mut map = state.processes.lock().unwrap();
+        let mut map = state.processes.lock();
         let proc = match map.get_mut(&profile_id) {
             Some(p) => p,
             None => {
@@ -1120,13 +1081,7 @@ async fn get_proxy_stats(
         (proc.info_port, proc.started_at)
     };
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(500))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return Err(format!("Failed to build reqwest client: {}", e)),
-    };
+    let client = &state.http_client;
 
     let url = format!("http://127.0.0.1:{}/metrics", info_port);
     let response = client.get(&url).send().await;
@@ -1165,7 +1120,7 @@ async fn get_proxy_stats(
     let now = std::time::Instant::now();
 
     // Re-lock to check cache and compute rate
-    let mut stats_map = state.stats_cache.lock().unwrap();
+    let mut stats_map = state.stats_cache.lock();
     let cache_entry = stats_map.get_mut(&profile_id);
 
     let (upload_speed, download_speed) = match cache_entry {
@@ -1254,7 +1209,7 @@ pub struct ConnectionHealthResult {
 async fn get_local_public_ip_internal(state: &ProcessManager) -> Result<String, String> {
     // Check if cached (5 min = 300 seconds)
     {
-        let cache = state.local_ip_cache.lock().unwrap();
+        let cache = state.local_ip_cache.lock();
         if let Some(ref cached) = *cache {
             if cached.fetched_at.elapsed() < std::time::Duration::from_secs(300) {
                 return Ok(cached.ip.clone());
@@ -1262,11 +1217,8 @@ async fn get_local_public_ip_internal(state: &ProcessManager) -> Result<String, 
         }
     }
 
-    // Fetch new
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| format!("Failed to build client for local IP lookup: {}", e))?;
+    // Fetch new using the shared client
+    let client = &state.http_client;
 
     let providers = [
         "https://api.ipify.org",
@@ -1282,7 +1234,7 @@ async fn get_local_public_ip_internal(state: &ProcessManager) -> Result<String, 
                     if let Ok(body) = res.text().await {
                         let ip = body.trim().to_string();
                         if !ip.is_empty() {
-                            let mut cache = state.local_ip_cache.lock().unwrap();
+                            let mut cache = state.local_ip_cache.lock();
                             *cache = Some(LocalIpCache {
                                 ip: ip.clone(),
                                 fetched_at: std::time::Instant::now(),
@@ -1469,16 +1421,47 @@ struct ProfileInfo {
     port: u16,
 }
 
-fn get_profile_info(app: &tauri::AppHandle, profile_id: &str) -> Option<ProfileInfo> {
-    let app_dir = app.path().app_data_dir().ok()?;
+/// Read profiles.json as a JSON array, returning an empty Vec if missing/invalid.
+fn read_profiles_from_disk(app_handle: &tauri::AppHandle) -> Vec<serde_json::Value> {
+    let app_dir = match app_handle.path().app_data_dir() {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
     let file_path = app_dir.join("profiles.json");
-    if !file_path.exists() {
-        return None;
+    let content = match std::fs::read_to_string(&file_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    serde_json::from_str::<Vec<serde_json::Value>>(&content).unwrap_or_default()
+}
+
+/// Return cached profiles, lazily populating the cache from disk on first use.
+/// Falls back to a disk read (and refreshes the cache) if the cache is empty.
+fn get_cached_profiles(
+    app_handle: &tauri::AppHandle,
+    state: &ProcessManager,
+) -> Vec<serde_json::Value> {
+    {
+        let guard = state.profiles_cache.lock();
+        if let Some(ref cached) = *guard {
+            return cached.clone();
+        }
     }
-    let content = std::fs::read_to_string(&file_path).ok()?;
-    let profiles: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let arr = profiles.as_array()?;
-    let profile_obj = arr
+    let from_disk = read_profiles_from_disk(app_handle);
+    *state.profiles_cache.lock() = Some(from_disk.clone());
+    from_disk
+}
+
+/// Invalidate the in-memory profiles cache. Call after any mutation
+/// (save/delete/update_last_connected_at) so the next read sees fresh data.
+fn invalidate_profiles_cache(state: &ProcessManager) {
+    *state.profiles_cache.lock() = None;
+}
+
+fn get_profile_info(app: &tauri::AppHandle, profile_id: &str) -> Option<ProfileInfo> {
+    let state = app.state::<ProcessManager>();
+    let profiles = get_cached_profiles(app, &state);
+    let profile_obj = profiles
         .iter()
         .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(profile_id))?;
 
@@ -1518,12 +1501,12 @@ fn update_tray_menu(app: &tauri::AppHandle, status: &str) -> Result<(), String> 
         };
 
         let active_id = {
-            let map = state.processes.lock().unwrap();
+            let map = state.processes.lock();
             map.keys().next().cloned()
         };
 
         let selected_id = {
-            let guard = state.selected_profile_id.lock().unwrap();
+            let guard = state.selected_profile_id.lock();
             guard.clone()
         };
 
@@ -1633,6 +1616,10 @@ fn update_last_connected_at(app_handle: &tauri::AppHandle, profile_id: &str) -> 
                 .map_err(|e| format!("Failed to serialize profiles: {}", e))?;
             std::fs::write(&file_path, updated_json)
                 .map_err(|e| format!("Failed to write profiles: {}", e))?;
+            // Mirror the mutation into the in-memory cache.
+            if let Some(state) = app_handle.try_state::<ProcessManager>() {
+                invalidate_profiles_cache(&state);
+            }
         }
     }
     Ok(())
@@ -1640,12 +1627,12 @@ fn update_last_connected_at(app_handle: &tauri::AppHandle, profile_id: &str) -> 
 
 fn quit_app(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<ProcessManager>();
-    let mut map = state.processes.lock().unwrap();
+    let mut map = state.processes.lock();
     for (profile_id, mut proc) in map.drain() {
         let _ = proc.child.kill();
         let _ = proc.child.wait();
         // Clear stats cache
-        let mut stats_map = state.stats_cache.lock().unwrap();
+        let mut stats_map = state.stats_cache.lock();
         stats_map.remove(&profile_id);
     }
     app_handle.exit(0);
@@ -1654,7 +1641,7 @@ fn quit_app(app_handle: &tauri::AppHandle) {
 fn stop_running_profile(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let state = app_handle.state::<ProcessManager>();
     let running_id = {
-        let map = state.processes.lock().unwrap();
+        let map = state.processes.lock();
         map.keys().next().cloned()
     };
     match running_id {
@@ -1676,7 +1663,7 @@ fn stop_running_profile(app_handle: &tauri::AppHandle) -> Result<(), String> {
 fn connect_current_profile(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let state = app_handle.state::<ProcessManager>();
     let selected_id = {
-        let id_lock = state.selected_profile_id.lock().unwrap();
+        let id_lock = state.selected_profile_id.lock();
         id_lock.clone()
     };
 
@@ -1694,7 +1681,7 @@ fn connect_current_profile(app_handle: &tauri::AppHandle) -> Result<(), String> 
     };
 
     let is_running = {
-        let map = state.processes.lock().unwrap();
+        let map = state.processes.lock();
         !map.is_empty()
     };
     if is_running {
@@ -1764,13 +1751,13 @@ fn set_selected_profile(
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<(), String> {
     {
-        let mut selected = state.selected_profile_id.lock().unwrap();
+        let mut selected = state.selected_profile_id.lock();
         *selected = profile_id;
     }
 
     // Update tray menu status
     let status = {
-        let map = state.processes.lock().unwrap();
+        let map = state.processes.lock();
         if map.is_empty() {
             "Disconnected"
         } else {
@@ -1784,6 +1771,12 @@ fn set_selected_profile(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Single shared HTTP client — avoids rebuilding a connection pool on every poll.
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .expect("failed to build shared reqwest client");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -1794,6 +1787,8 @@ pub fn run() {
             logs: Mutex::new(HashMap::new()),
             worker_counts: Mutex::new(HashMap::new()),
             selected_profile_id: Mutex::new(None),
+            profiles_cache: Mutex::new(None),
+            http_client,
             disable_logs: std::sync::atomic::AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
@@ -1880,7 +1875,7 @@ pub fn run() {
             {
                 if let Ok(settings) = load_settings(handle.clone()) {
                     if settings.hide_dock_icon.unwrap_or(false) {
-                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                        app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                     }
                 }
             }
@@ -1933,7 +1928,7 @@ pub fn run() {
                 }
             } else if let tauri::WindowEvent::Destroyed = event {
                 if let Some(state) = window.try_state::<ProcessManager>() {
-                    let mut map = state.processes.lock().unwrap();
+                    let mut map = state.processes.lock();
                     for (_, mut proc) in map.drain() {
                         let _ = proc.child.kill();
                         let _ = proc.child.wait();
@@ -1948,4 +1943,159 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VALID_CONFIG: &str = "[Interface]
+PrivateKey = abc123privatekey
+Address = 10.0.0.2/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = xyz789publickey
+Endpoint = vpn.example.com:51820
+AllowedIPs = 0.0.0.0/0
+";
+
+    #[test]
+    fn parses_valid_config() {
+        let parsed = parse_wg_config(VALID_CONFIG).expect("valid config should parse");
+        assert_eq!(parsed.address, "10.0.0.2/32");
+        assert_eq!(parsed.dns, "1.1.1.1");
+        assert_eq!(parsed.endpoint, "vpn.example.com:51820");
+        assert_eq!(parsed.allowed_ips, "0.0.0.0/0");
+    }
+
+    #[test]
+    fn ignores_comments_and_blank_lines() {
+        let config = "# This is a comment
+; semicolon comment too
+
+[Interface]
+PrivateKey = key
+Address = 10.5.5.5/24
+
+[Peer]
+# nested comment
+PublicKey = pub
+Endpoint = host:443
+AllowedIPs = 10.0.0.0/8
+";
+        let parsed = parse_wg_config(config).expect("config with comments should parse");
+        assert_eq!(parsed.address, "10.5.5.5/24");
+        assert_eq!(parsed.endpoint, "host:443");
+    }
+
+    #[test]
+    fn handles_whitespace_around_keys_and_values() {
+        let config = "[Interface]
+   PrivateKey    =    spacedkey
+Address = 10.0.0.2/32
+
+[Peer]
+PublicKey =pub
+Endpoint= vpn.example.com:51820
+AllowedIPs= 0.0.0.0/0
+";
+        let parsed = parse_wg_config(config).expect("whitespace should be tolerated");
+        assert_eq!(parsed.endpoint, "vpn.example.com:51820");
+        assert_eq!(parsed.allowed_ips, "0.0.0.0/0");
+    }
+
+    #[test]
+    fn rejects_config_missing_required_fields() {
+        // Missing AllowedIPs
+        let config = "[Interface]
+PrivateKey = key
+Address = 10.0.0.2/32
+
+[Peer]
+PublicKey = pub
+Endpoint = vpn.example.com:51820
+";
+        assert!(parse_wg_config(config).is_none());
+
+        // Missing PrivateKey
+        let config2 = "[Interface]
+Address = 10.0.0.2/32
+
+[Peer]
+PublicKey = pub
+Endpoint = vpn.example.com:51820
+AllowedIPs = 0.0.0.0/0
+";
+        assert!(parse_wg_config(config2).is_none());
+    }
+
+    #[test]
+    fn dns_is_optional_and_defaults_to_empty() {
+        let config = "[Interface]
+PrivateKey = key
+Address = 10.0.0.2/32
+
+[Peer]
+PublicKey = pub
+Endpoint = vpn.example.com:51820
+AllowedIPs = 0.0.0.0/0
+";
+        let parsed = parse_wg_config(config).expect("config without DNS should parse");
+        assert_eq!(parsed.dns, "");
+    }
+
+    #[test]
+    fn empty_input_returns_none() {
+        assert!(parse_wg_config("").is_none());
+    }
+
+    #[test]
+    fn parses_multiple_allowed_ips() {
+        let config = "[Interface]
+PrivateKey = key
+Address = 10.0.0.2/32
+
+[Peer]
+PublicKey = pub
+Endpoint = vpn.example.com:51820
+AllowedIPs = 10.0.0.0/24, 192.168.1.0/24
+";
+        let parsed = parse_wg_config(config).expect("multi-IP config should parse");
+        assert_eq!(parsed.allowed_ips, "10.0.0.0/24, 192.168.1.0/24");
+    }
+
+    #[test]
+    fn parse_meta_comments_extracts_metadata() {
+        let content = "# GeneratedAt: 2024-01-15T10:30:00Z
+# ProxyType: http
+# Port: 8080
+
+[Interface]
+PrivateKey = key
+";
+        let (generated_at, proxy_type, port) = parse_meta_comments(content);
+        assert_eq!(generated_at, "2024-01-15T10:30:00Z");
+        assert_eq!(proxy_type, "http");
+        assert_eq!(port, 8080);
+    }
+
+    #[test]
+    fn parse_meta_comments_uses_defaults_when_missing() {
+        let content = "[Interface]
+PrivateKey = key
+";
+        let (generated_at, proxy_type, port) = parse_meta_comments(content);
+        assert_eq!(generated_at, "");
+        assert_eq!(proxy_type, "socks5");
+        assert_eq!(port, 1080);
+    }
+
+    #[test]
+    fn classifies_log_levels_correctly() {
+        assert_eq!(classify_stderr_line("something failed"), "ERROR");
+        assert_eq!(classify_stderr_line("ERROR: bad thing"), "ERROR");
+        assert_eq!(classify_stderr_line("warning: deprecated"), "WARN");
+        assert_eq!(classify_stderr_line("just info"), "DEBUG");
+    }
 }

@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Profile, ProxyType, ProfileStatus, GeneratedConfigMeta, ConnectionHealthResult, LogEntry, ProxyStats } from "../types";
+import { Sparkline } from "./Sparkline";
 
 
 interface ProfileDetailsProps {
@@ -50,6 +51,9 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   
   // Traffic Statistics State
   const [stats, setStats] = useState<ProxyStats | null>(null);
+  // Ring buffers of recent throughput samples, feeding the live sparkline.
+  const [dlHistory, setDlHistory] = useState<number[]>([]);
+  const [ulHistory, setUlHistory] = useState<number[]>([]);
   const [isCheckingHealth, setIsCheckingHealth] = useState(false);
   const [lastCheckedTime, setLastCheckedTime] = useState<string | null>(null);
   const [autoCheck, setAutoCheck] = useState<boolean>(() => {
@@ -388,7 +392,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
 
   const handleRegenerate = async () => {
     if (port < 1024 || port > 65535) {
-      alert("Port must be between 1024 and 65535");
+      showToast("Port must be between 1024 and 65535", "error");
       return;
     }
 
@@ -414,9 +418,10 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
           updatedAt: timestamp 
         });
       }
+      showToast("Proxy configuration generated", "success");
     } catch (err: any) {
       console.error(err);
-      alert(err.toString() || "Failed to generate config file");
+      showToast(err.toString() || "Failed to generate config file", "error");
     } finally {
       setIsRegenerating(false);
     }
@@ -424,7 +429,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
 
   const handleStartProxy = async () => {
     if (configStatus !== "ready" || !generatedConfigMeta) {
-      alert("Please generate or regenerate the proxy configuration file first.");
+      showToast("Please generate or regenerate the proxy configuration file first.", "error");
       return;
     }
 
@@ -441,7 +446,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     } catch (err: any) {
       console.error("Failed to start wireproxy:", err);
       onStatusChange("error");
-      alert(err.toString() || "Failed to start WireProxy");
+      showToast(err.toString() || "Failed to start WireProxy", "error");
     } finally {
       setIsActionLoading(false);
     }
@@ -454,7 +459,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
       onStatusChange("stopped");
     } catch (err: any) {
       console.error("Failed to stop wireproxy:", err);
-      alert(err.toString() || "Failed to stop WireProxy");
+      showToast(err.toString() || "Failed to stop WireProxy", "error");
     } finally {
       setIsActionLoading(false);
     }
@@ -503,6 +508,9 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
           profileId: profile.id,
         });
         setStats(res);
+        // Feed the sparkline: keep the most recent 30 samples (~1 min at 2s).
+        setDlHistory((prev) => [...prev, res.downloadSpeedBytesPerSec].slice(-30));
+        setUlHistory((prev) => [...prev, res.uploadSpeedBytesPerSec].slice(-30));
       } catch (err) {
         console.error("Failed to fetch proxy stats:", err);
       }
@@ -513,6 +521,8 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
       interval = setInterval(fetchStats, 2000);
     } else {
       setStats(null);
+      setDlHistory([]);
+      setUlHistory([]);
     }
 
     return () => {
@@ -706,12 +716,12 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
             {/* Connection Health Card */}
             {profile.status === "running" && (
               <div className="details-section">
-                <h3 className="section-title">Connection Health</h3>
+                <h3 className="section-title">Connection</h3>
                 <div className="health-card">
                   <div className="health-card-header">
                     <div className="health-status-wrapper">
                       <Activity size={18} className={`health-icon ${isCheckingHealth ? "animate-pulse" : ""}`} />
-                      <span className="health-card-title">Connection Stats</span>
+                      <span className="health-card-title">Live status</span>
                     </div>
                     <div className="health-actions">
                       <label className="auto-check-toggle" htmlFor="auto-check-cb">
@@ -855,7 +865,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
 
             {/* Connection Setup */}
             <div className="details-section">
-              <h3 className="section-title">Local Proxy Settings</h3>
+              <h3 className="section-title">Local proxy</h3>
               <div className="settings-grid">
                 <div className="form-group">
                   <label htmlFor="proxy-type" className="form-label">Proxy Type</label>
@@ -941,16 +951,16 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                         onClick={handleStopProxy}
                         disabled={isActionLoading}
                       >
-                        Stop Proxy
+                        Stop tunnel
                       </button>
                     ) : (
                       <button 
                         type="button" 
-                        className="btn btn-primary btn-full"
+                        className="btn btn-primary-glow btn-full"
                         onClick={handleStartProxy}
                         disabled={profile.status === "starting" || isActionLoading}
                       >
-                        {profile.status === "starting" ? "Starting..." : "Start Proxy"}
+                        {profile.status === "starting" ? "Starting…" : "Start tunnel"}
                       </button>
                     )}
                   </div>
@@ -960,7 +970,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
 
             {/* WireGuard Tunnel Details */}
             <div className="details-section">
-              <h3 className="section-title">WireGuard Tunnel Details</h3>
+              <h3 className="section-title">Tunnel details</h3>
               <div className="meta-grid">
                 <div className="meta-card">
                   <span className="meta-label">Endpoint</span>
@@ -1011,60 +1021,103 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
 
         {activeTab === "speed" && (
           <>
-            {/* Traffic Statistics Card */}
+            {/* Live throughput + sparkline */}
             {profile.status === "running" && stats ? (
               <div className="details-section">
-                <h3 className="section-title">Traffic Statistics</h3>
-                <div className="stats-card">
-                  <div className="stats-grid">
-                    <div className="stats-metric">
-                      <span className="metric-label">
-                        <ArrowDown size={12} className="stats-label-icon download" /> Download Speed
-                      </span>
-                      <span className="metric-value font-mono">
-                        {formatSpeed(stats.downloadSpeedBytesPerSec)}
-                      </span>
-                    </div>
-                    <div className="stats-metric">
-                      <span className="metric-label">
-                        <ArrowUp size={12} className="stats-label-icon upload" /> Upload Speed
-                      </span>
-                      <span className="metric-value font-mono">
-                        {formatSpeed(stats.uploadSpeedBytesPerSec)}
-                      </span>
-                    </div>
-                    <div className="stats-metric">
-                      <span className="metric-label">
-                        <ArrowDown size={12} className="stats-label-icon download" /> Downloaded
-                      </span>
-                      <span className="metric-value font-mono">
-                        {formatBytes(stats.downloadedBytesTotal)}
-                      </span>
-                    </div>
-                    <div className="stats-metric">
-                      <span className="metric-label">
-                        <ArrowUp size={12} className="stats-label-icon upload" /> Uploaded
-                      </span>
-                      <span className="metric-value font-mono">
-                        {formatBytes(stats.uploadedBytesTotal)}
-                      </span>
-                    </div>
-                    <div className="stats-metric">
-                      <span className="metric-label">
-                        <Clock size={12} className="stats-label-icon duration" /> Connected For
-                      </span>
-                      <span className="metric-value font-mono">
-                        {formatDuration(stats.connectedForSecs)}
-                      </span>
-                    </div>
-                    <div className="stats-metric">
-                      <span className="metric-label">
-                        <Activity size={12} className="stats-label-icon handshake" /> Last Handshake
-                      </span>
-                      <span className="metric-value font-mono">
-                        {formatHandshakeAge(stats.lastHandshakeAgeSecs)}
-                      </span>
-                    </div>
+                <h3 className="section-title">Throughput</h3>
+
+                {/* Big live readout */}
+                <div className="speed-readout">
+                  <div className="speed-readout-cell">
+                    <span className="speed-readout-label">
+                      <ArrowDown size={11} className="arrow-icon" /> Download
+                    </span>
+                    <span className="speed-readout-value">
+                      {formatSpeed(stats.downloadSpeedBytesPerSec).split(" ")[0]}
+                      <span className="unit">{formatSpeed(stats.downloadSpeedBytesPerSec).split(" ")[1]}</span>
+                    </span>
+                    <span className="speed-readout-total">
+                      {formatBytes(stats.downloadedBytesTotal)} total
+                    </span>
+                  </div>
+                  <div className="speed-readout-cell">
+                    <span className="speed-readout-label">
+                      <ArrowUp size={11} className="arrow-icon" /> Upload
+                    </span>
+                    <span className="speed-readout-value">
+                      {formatSpeed(stats.uploadSpeedBytesPerSec).split(" ")[0]}
+                      <span className="unit">{formatSpeed(stats.uploadSpeedBytesPerSec).split(" ")[1]}</span>
+                    </span>
+                    <span className="speed-readout-total">
+                      {formatBytes(stats.uploadedBytesTotal)} total
+                    </span>
+                  </div>
+                </div>
+
+                {/* Sparkline */}
+                <div className="sparkline-wrap">
+                  <div className="sparkline-head">
+                    <span className="sparkline-title">
+                      <Activity size={11} /> Last minute
+                    </span>
+                    <span className="sparkline-legend">
+                      <span className="leg"><span className="swatch" style={{ backgroundColor: "var(--signal)" }} /> DL</span>
+                      <span className="leg"><span className="swatch" style={{ backgroundColor: "var(--txt-2)" }} /> UL</span>
+                    </span>
+                  </div>
+                  <Sparkline download={dlHistory} upload={ulHistory} />
+                </div>
+
+                {/* Session stats grid */}
+                <h3 className="section-title" style={{ marginTop: 4 }}>Session</h3>
+                <div className="stats-grid">
+                  <div className="stats-metric">
+                    <span className="metric-label">
+                      <Clock size={11} className="stats-label-icon duration" /> Connected for
+                    </span>
+                    <span className="metric-value">
+                      {formatDuration(stats.connectedForSecs)}
+                    </span>
+                  </div>
+                  <div className="stats-metric">
+                    <span className="metric-label">
+                      <Activity size={11} className="stats-label-icon handshake" /> Last handshake
+                    </span>
+                    <span className="metric-value">
+                      {formatHandshakeAge(stats.lastHandshakeAgeSecs)}
+                    </span>
+                  </div>
+                  <div className="stats-metric">
+                    <span className="metric-label">
+                      <ArrowDown size={11} className="stats-label-icon download" /> Downloaded
+                    </span>
+                    <span className="metric-value">
+                      {formatBytes(stats.downloadedBytesTotal)}
+                    </span>
+                  </div>
+                  <div className="stats-metric">
+                    <span className="metric-label">
+                      <ArrowUp size={11} className="stats-label-icon upload" /> Uploaded
+                    </span>
+                    <span className="metric-value">
+                      {formatBytes(stats.uploadedBytesTotal)}
+                    </span>
+                  </div>
+                  <div className="stats-metric">
+                    <span className="metric-label">
+                      <ArrowDown size={11} className="stats-label-icon download" /> Download speed
+                    </span>
+                    <span className="metric-value">
+                      {formatSpeed(stats.downloadSpeedBytesPerSec)}
+                    </span>
+                  </div>
+                  <div className="stats-metric">
+                    <span className="metric-label">
+                      <ArrowUp size={11} className="stats-label-icon upload" /> Upload speed
+                    </span>
+                    <span className="metric-value">
+                      {formatSpeed(stats.uploadSpeedBytesPerSec)}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1073,9 +1126,9 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                 <div className="stats-empty-icon">
                   <Activity size={24} />
                 </div>
-                <h4 className="stats-empty-primary">Traffic stats inactive</h4>
+                <h4 className="stats-empty-primary">No live traffic</h4>
                 <p className="stats-empty-secondary">
-                  Start the proxy to view real-time upload and download speeds.
+                  Start the tunnel to see real-time throughput and a live speed graph.
                 </p>
               </div>
             )}
@@ -1086,7 +1139,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
           <>
             {/* WireProxy Configuration File */}
             <div className="details-section">
-              <h3 className="section-title">Proxy Configuration File</h3>
+              <h3 className="section-title">Proxy config file</h3>
               <div className="config-file-card">
                 <div className="config-file-info">
                   <div className="config-file-status-wrapper">

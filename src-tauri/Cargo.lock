@@ -5470,6 +5470,7 @@ name = "wireport"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "parking_lot",
  "reqwest",
  "rfd",
  "serde",

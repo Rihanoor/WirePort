@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Settings } from "lucide-react";
+import { Toggle } from "./Toggle";
 
 interface SettingsPanelProps {
   showToast: (msg: string, type: "success" | "error") => void;
@@ -51,13 +52,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ showToast }) => {
   };
 
   const handleToggleHideDock = (checked: boolean) => {
-    const next = { ...settings, hideDockIcon: checked };
-    handleSave(next);
+    handleSave({ ...settings, hideDockIcon: checked });
   };
 
   const handleToggleDisableLogs = (checked: boolean) => {
-    const next = { ...settings, disableLogs: checked };
-    handleSave(next);
+    handleSave({ ...settings, disableLogs: checked });
   };
 
   const handleBinaryPathChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -76,7 +75,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ showToast }) => {
             <Settings size={24} />
           </div>
           <div className="details-name-wrapper">
-            <h2 style={{ fontSize: "18px", fontWeight: 700 }}>Application Settings</h2>
+            <h2 className="settings-title">Application Settings</h2>
             <span className="details-meta-tag">Preferences</span>
           </div>
         </div>
@@ -90,145 +89,52 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ showToast }) => {
         <div className="details-body" style={{ maxWidth: "600px" }}>
           <div className="details-section">
             <h3 className="section-title">General Settings</h3>
-            
+
             <div className="settings-grid" style={{ gridTemplateColumns: "1fr" }}>
               {/* macOS Dock Icon Preference */}
-              <div 
-                className="form-group"
-                style={{
-                  display: "flex",
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "16px 0",
-                  borderBottom: "1px solid var(--border)",
-                  gap: "24px"
-                }}
-              >
-                <div style={{ display: "flex", flexDirection: "column", gap: "4px", flex: 1 }}>
-                  <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-primary)" }}>
-                    Hide Dock Icon (macOS)
-                  </span>
-                  <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+              <div className="settings-row">
+                <div className="settings-row-text">
+                  <span className="settings-row-label">Hide Dock Icon (macOS)</span>
+                  <span className="settings-row-help">
                     Hides the app from the Dock. WirePort will run in the background and can be managed from the menu bar status icon.
                   </span>
                 </div>
-                
-                <label className="switch-toggle" style={{ position: "relative", display: "inline-block", width: "40px", height: "20px" }}>
-                  <input 
-                    type="checkbox" 
-                    checked={settings.hideDockIcon}
-                    onChange={(e) => handleToggleHideDock(e.target.checked)}
-                    style={{ opacity: 0, width: 0, height: 0 }}
-                  />
-                  <span 
-                    className="slider" 
-                    style={{
-                      position: "absolute",
-                      cursor: "pointer",
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      backgroundColor: settings.hideDockIcon ? "var(--primary)" : "#2a2f45",
-                      transition: ".3s",
-                      borderRadius: "20px",
-                    }}
-                  >
-                    <span 
-                      style={{
-                        position: "absolute",
-                        content: '""',
-                        height: "14px",
-                        width: "14px",
-                        left: "3px",
-                        bottom: "3px",
-                        backgroundColor: "white",
-                        transition: ".3s",
-                        borderRadius: "50%",
-                        transform: settings.hideDockIcon ? "translateX(20px)" : "translateX(0)"
-                      }}
-                    />
-                  </span>
-                </label>
+                <Toggle
+                  id="hide-dock-toggle"
+                  checked={settings.hideDockIcon}
+                  onChange={handleToggleHideDock}
+                  aria-label="Hide Dock Icon"
+                />
               </div>
 
               {/* Disable Runtime Logging Preference */}
-              <div 
-                className="form-group"
-                style={{
-                  display: "flex",
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "16px 0",
-                  borderBottom: "1px solid var(--border)",
-                  gap: "24px"
-                }}
-              >
-                <div style={{ display: "flex", flexDirection: "column", gap: "4px", flex: 1 }}>
-                  <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-primary)" }}>
-                    Disable Runtime Logging
-                  </span>
-                  <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+              <div className="settings-row">
+                <div className="settings-row-text">
+                  <span className="settings-row-label">Disable Runtime Logging</span>
+                  <span className="settings-row-help">
                     Turns off the console logging of WireProxy stdout and stderr. Can improve performance and reduce memory usage.
                   </span>
                 </div>
-                
-                <label className="switch-toggle" style={{ position: "relative", display: "inline-block", width: "40px", height: "20px" }}>
-                  <input 
-                    type="checkbox" 
-                    checked={settings.disableLogs}
-                    onChange={(e) => handleToggleDisableLogs(e.target.checked)}
-                    style={{ opacity: 0, width: 0, height: 0 }}
-                  />
-                  <span 
-                    className="slider" 
-                    style={{
-                      position: "absolute",
-                      cursor: "pointer",
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      backgroundColor: settings.disableLogs ? "var(--primary)" : "#2a2f45",
-                      transition: ".3s",
-                      borderRadius: "20px",
-                    }}
-                  >
-                    <span 
-                      style={{
-                        position: "absolute",
-                        content: '""',
-                        height: "14px",
-                        width: "14px",
-                        left: "3px",
-                        bottom: "3px",
-                        backgroundColor: "white",
-                        transition: ".3s",
-                        borderRadius: "50%",
-                        transform: settings.disableLogs ? "translateX(20px)" : "translateX(0)"
-                      }}
-                    />
-                  </span>
-                </label>
+                <Toggle
+                  id="disable-logs-toggle"
+                  checked={settings.disableLogs}
+                  onChange={handleToggleDisableLogs}
+                  aria-label="Disable Runtime Logging"
+                />
               </div>
 
               {/* WireProxy Custom Binary Path */}
               <div className="form-group" style={{ marginTop: "12px" }}>
                 <label className="form-label">Custom WireProxy Binary Path (Optional)</label>
-                <div style={{ display: "flex", gap: "10px" }}>
-                  <input 
-                    type="text" 
-                    className="form-input"
-                    value={settings.wireproxyBinaryPath}
-                    onChange={handleBinaryPathChange}
-                    onBlur={handleBinaryPathBlur}
-                    placeholder="Leave blank to use bundled wireproxy"
-                    style={{ flex: 1 }}
-                  />
-                </div>
-                <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={settings.wireproxyBinaryPath}
+                  onChange={handleBinaryPathChange}
+                  onBlur={handleBinaryPathBlur}
+                  placeholder="Leave blank to use bundled wireproxy"
+                />
+                <span className="settings-field-help">
                   Specify the absolute path to a custom wireproxy binary if you want to bypass the bundled sidecar.
                 </span>
               </div>

@@ -19,38 +19,39 @@ export const EmptyState: React.FC<EmptyStateProps> = ({ onImportClick }) => {
         </div>
 
         {/* Messaging */}
-        <h1 className="empty-state-title">No Profiles Loaded</h1>
+        <h1 className="empty-state-title">No profiles yet</h1>
         <p className="empty-state-description">
-          Convert your WireGuard tunnels into local SOCKS5 or HTTP proxies. To get started, import a WireGuard configuration profile.
+          Import a WireGuard config to expose it as a local SOCKS5 or HTTP proxy
+          that any app can route through — no root, no system VPN.
         </p>
 
         {/* Primary Action */}
         <button className="btn btn-primary btn-large btn-center" onClick={onImportClick}>
           <Plus size={18} />
-          <span>Import WireGuard Profile (.conf)</span>
+          <span>Import .conf</span>
         </button>
 
         {/* Workflow Diagram */}
         <div className="workflow-diagram-container">
-          <div className="workflow-title">Primary Workflow</div>
+          <div className="workflow-title">How it works</div>
           <div className="workflow-flow">
             <div className="workflow-node">
               <HardDrive size={18} className="node-icon" />
-              <div className="node-label">WireGuard Config</div>
+              <div className="node-label">WireGuard .conf</div>
             </div>
             
             <ArrowRight size={14} className="flow-arrow" />
             
             <div className="workflow-node active">
               <Cpu size={18} className="node-icon active-icon" />
-              <div className="node-label">WirePort Engine</div>
+              <div className="node-label">WirePort</div>
             </div>
             
             <ArrowRight size={14} className="flow-arrow" />
             
             <div className="workflow-node">
               <Share2 size={18} className="node-icon" />
-              <div className="node-label">Local Proxy (1080)</div>
+              <div className="node-label">Local proxy</div>
             </div>
           </div>
         </div>
