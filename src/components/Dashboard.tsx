@@ -1,16 +1,18 @@
-import React from "react";
-import { 
-  Shield, 
-  Plus, 
-  ArrowRight, 
-  Cpu, 
-  Activity, 
-  FileText, 
-  Network, 
-  CheckCircle,
-  Clock
+import React, { useState, useEffect } from "react";
+import {
+  Shield,
+  Plus,
+  ArrowRight,
+  Activity,
+  Network,
+  Clock,
+  ArrowDown,
+  ArrowUp,
+  Gauge,
+  Calendar
 } from "lucide-react";
-import { Profile } from "../types";
+import { invoke } from "@tauri-apps/api/core";
+import { Profile, UsageOverview } from "../types";
 
 interface DashboardProps {
   profiles: Profile[];
@@ -18,11 +20,40 @@ interface DashboardProps {
   onImportClick: () => void;
 }
 
+/** Format a byte count into a compact human string (e.g. "1.2 GB"). */
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, i);
+  const decimals = i === 0 ? 0 : value < 10 ? 1 : 0;
+  return `${value.toFixed(decimals)} ${units[i]}`;
+}
+
 export const Dashboard: React.FC<DashboardProps> = ({
   profiles,
   onProfileSelect,
   onImportClick
 }) => {
+  const [usage, setUsage] = useState<UsageOverview | null>(null);
+
+  // Poll aggregate usage overview every 10s (and on mount). Stays live while
+  // the overview is visible, even with no active tunnel — backend persists
+  // across disconnects.
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const fetchUsage = async () => {
+      try {
+        const res = await invoke<UsageOverview>("get_usage_overview");
+        setUsage(res);
+      } catch (err) {
+        console.error("Failed to load usage overview:", err);
+      }
+    };
+    fetchUsage();
+    interval = setInterval(fetchUsage, 10000);
+    return () => { if (interval) clearInterval(interval); };
+  }, []);
   // Counters
   const totalProfiles = profiles.length;
   const runningProfiles = profiles.filter(p => p.status === "running").length;
@@ -155,51 +186,76 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
 
-        {/* Right Column: Status & Quick Actions */}
+        {/* Right Column: Data Usage & Quick Actions */}
         <div className="dashboard-col-right">
-          {/* System Status Card */}
+          {/* Data Usage Card */}
           <div className="status-system-card">
-            <h3 className="card-sub-title">Status</h3>
+            <h3 className="card-sub-title">Data usage</h3>
+
+            {/* All-time total headline */}
+            <div className="usage-total">
+              <span className="usage-total-label">All-time total</span>
+              <div className="usage-total-rows">
+                <span className="usage-total-metric">
+                  <ArrowDown size={12} />
+                  <span className="usage-total-value">{formatBytes(usage?.total.downloaded ?? 0)}</span>
+                  <span className="usage-total-unit">downloaded</span>
+                </span>
+                <span className="usage-total-metric">
+                  <ArrowUp size={12} />
+                  <span className="usage-total-value">{formatBytes(usage?.total.uploaded ?? 0)}</span>
+                  <span className="usage-total-unit">uploaded</span>
+                </span>
+              </div>
+            </div>
+
             <div className="status-rows">
-              <div className="status-row-item">
+              <div className="status-row-item usage-row">
                 <div className="status-row-left">
-                  <Cpu size={16} className="status-row-icon" />
-                  <span>WireProxy engine</span>
+                  <Gauge size={16} className="status-row-icon" />
+                  <span>Today</span>
                 </div>
-                <span className="status-row-badge active">
-                  <CheckCircle size={10} /> Ready
+                <span className="usage-values">
+                  <span className="usage-dl"><ArrowDown size={10} /> {formatBytes(usage?.today.downloaded ?? 0)}</span>
+                  <span className="usage-ul"><ArrowUp size={10} /> {formatBytes(usage?.today.uploaded ?? 0)}</span>
                 </span>
               </div>
 
-              <div className="status-row-item">
+              <div className="status-row-item usage-row">
+                <div className="status-row-left">
+                  <Clock size={16} className="status-row-icon" />
+                  <span>Last 24 hours</span>
+                </div>
+                <span className="usage-values">
+                  <span className="usage-dl"><ArrowDown size={10} /> {formatBytes(usage?.last24h.downloaded ?? 0)}</span>
+                  <span className="usage-ul"><ArrowUp size={10} /> {formatBytes(usage?.last24h.uploaded ?? 0)}</span>
+                </span>
+              </div>
+
+              <div className="status-row-item usage-row">
+                <div className="status-row-left">
+                  <Calendar size={16} className="status-row-icon" />
+                  <span>This week</span>
+                </div>
+                <span className="usage-values">
+                  <span className="usage-dl"><ArrowDown size={10} /> {formatBytes(usage?.week.downloaded ?? 0)}</span>
+                  <span className="usage-ul"><ArrowUp size={10} /> {formatBytes(usage?.week.uploaded ?? 0)}</span>
+                </span>
+              </div>
+
+              <div className="status-row-item usage-row">
                 <div className="status-row-left">
                   <Activity size={16} className="status-row-icon" />
-                  <span>Health checks</span>
+                  <span>This month</span>
                 </div>
-                <span className="status-row-badge active">
-                  <CheckCircle size={10} /> On
+                <span className="usage-values">
+                  <span className="usage-dl"><ArrowDown size={10} /> {formatBytes(usage?.month.downloaded ?? 0)}</span>
+                  <span className="usage-ul"><ArrowUp size={10} /> {formatBytes(usage?.month.uploaded ?? 0)}</span>
                 </span>
               </div>
-
-              <div className="status-row-item">
-                <div className="status-row-left">
-                  <FileText size={16} className="status-row-icon" />
-                  <span>Runtime logs</span>
-                </div>
-                <span className="status-row-badge active">
-                  <CheckCircle size={10} /> On
-                </span>
-              </div>
-
-              <div className="status-row-item">
-                <div className="status-row-left">
-                  <Activity size={16} className="status-row-icon" />
-                  <span>Live statistics</span>
-                </div>
-                <span className="status-row-badge active">
-                  <CheckCircle size={10} /> On
-                </span>
-              </div>
+            </div>
+            <div className="usage-foot">
+              <span className="usage-foot-hint">Saved across disconnects</span>
             </div>
           </div>
 

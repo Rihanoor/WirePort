@@ -238,7 +238,7 @@ function App() {
         onImportClick={handleImportProfile}
       />
       <main className="app-main">
-        {!selectedProfileId && (
+        {(selectedProfileId === "overview" || selectedProfileId === null) && (
           <Header activeProfile={runningProfile || null} onStopClick={handleStopRunningProfile} />
         )}
         {loading ? (
@@ -249,7 +249,7 @@ function App() {
           <EmptyState onImportClick={handleImportProfile} />
         ) : selectedProfileId === "settings" ? (
           <SettingsPanel showToast={showToast} />
-        ) : selectedProfile ? (
+        ) : selectedProfile && selectedProfileId !== "overview" ? (
           <ProfileDetails
             profile={selectedProfile}
             onUpdate={handleUpdateProfile}

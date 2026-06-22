@@ -1,5 +1,5 @@
 import React from "react";
-import { Plus, Shield, Info, Settings } from "lucide-react";
+import { Plus, Shield, Info, Settings, LayoutDashboard } from "lucide-react";
 import { Profile } from "../types";
 
 interface SidebarProps {
@@ -20,9 +20,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Brand Header */}
       <div 
         className="sidebar-brand" 
-        onClick={() => onProfileSelect(null)}
+        onClick={() => onProfileSelect("overview")}
         style={{ cursor: "pointer" }}
-        title="Go to Control Center Dashboard"
+        title="Go to overview"
       >
         <div className="brand-logo">
           <Shield size={20} className="brand-icon" />
@@ -38,6 +38,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button className="btn btn-primary btn-full" onClick={onImportClick}>
           <Plus size={16} />
           <span>Import</span>
+        </button>
+        <button
+          className={`settings-sidebar-btn btn btn-full ${selectedProfileId === "overview" ? "active" : ""}`}
+          onClick={() => onProfileSelect("overview")}
+          title="Overview"
+        >
+          <LayoutDashboard size={16} />
+          <span>Overview</span>
         </button>
       </div>
 

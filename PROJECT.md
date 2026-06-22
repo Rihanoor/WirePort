@@ -10,14 +10,14 @@ Users should not need to touch terminal commands or manually edit configuration 
 
 ## Primary Workflow
 
-Import WireGuard Profile
-→ Configure Proxy Port
-→ Start Proxy
-→ Use Local Proxy
+Import WireGuard config
+→ Configure proxy port
+→ Start tunnel
+→ Use local proxy
 
 Example:
 
-WireGuard Config
+WireGuard .conf
 ↓
 WirePort
 ↓
@@ -30,14 +30,16 @@ Browser / Application
 * Import WireGuard .conf files
 * Create SOCKS5 proxy
 * Create HTTP proxy
-* Start proxy
-* Stop proxy
+* Start tunnel
+* Stop tunnel
 * View logs
 * Copy proxy endpoint
 * Test connection
 * Display current public IP
 * Display upload/download speed
 * Display total data usage
+* Live throughput sparkline (last ~60s)
+* System tray controls (connect/disconnect/quit)
 
 ## Non Goals
 

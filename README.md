@@ -104,14 +104,18 @@ flowchart TD
 * **Live Diagnostics**: Real-time monitoring of:
   * Exit Public IP & Country ISP.
   * Connection health, latency, and uptime.
-  * Real-time download/upload speed.
+  * Real-time download/upload speed with a **scrolling throughput sparkline**.
   * Cumulative session bandwidth counters.
 * **System Tray Support**: Minimize to the system tray for zero-clutter running. Supports quick toggles and system notifications for state changes.
-* **Advanced Engine Configuration**: Bundle a native `wireproxy` sidecar binary or configure fallback paths.
+* **Responsive UI**: Adapts from full window down to a compact icon-only sidebar; respects `prefers-reduced-motion`.
+* **Offline-First**: Fonts are bundled locally, so the UI renders correctly with no network connection.
+* **Advanced Engine Configuration**: Bundle a native `wireproxy` sidecar binary or configure a custom binary path under Application Settings.
 
 ---
 
 ## Screenshots
+
+> The screenshots below reflect the redesigned interface (tinted-ink theme, signal-green live indicator, monospace telemetry, throughput sparkline).
 
 | Dashboard                                    | Profile Overview                                            |
 | -------------------------------------------- | ----------------------------------------------------------- |
@@ -166,7 +170,7 @@ WirePort uses `wireproxy` as a sidecar process.
    * Linux: `src-tauri/binaries/wireproxy-x86_64-unknown-linux-gnu`
 
 > [!NOTE]
-> In development, you can bypass sidecar compilation by skipping this step and pointing to any custom `wireproxy` binary path directly through the application's **Advanced Settings** modal.
+> In development, you can bypass sidecar compilation by skipping this step and pointing to any custom `wireproxy` binary path directly through the application's **Application Settings** panel.
 
 ### 3. Run in Development Mode
 
@@ -194,18 +198,22 @@ The compiled assets will be available under `src-tauri/target/release/bundle/`.
 ├── README.md               # Product documentation
 ├── package.json            # Node/frontend project manifest
 ├── tsconfig.json           # TypeScript configuration
+├── index.html              # HTML entrypoint (no external font links)
 ├── src/                    # Frontend source code
 │   ├── App.tsx             # Main React entrypoint
+│   ├── App.css             # Single design-system stylesheet (tokens + surfaces)
 │   ├── main.tsx            # DOM initialization
-│   ├── components/         # Modular dashboard, sidebar, and tray UI components
+│   ├── assets/
+│   │   └── fonts/          # Bundled IBM Plex Mono woff2 (offline-safe)
+│   ├── components/         # Dashboard, sidebar, profile details, sparkline, toggle
 │   └── types/              # Shared TS Interfaces
 └── src-tauri/              # Rust desktop backend
     ├── Cargo.toml          # Rust package config
     ├── build.rs            # Tauri build-time scripts
-    ├── tauri.conf.json     # Tauri app configuration and permissions
+    ├── tauri.conf.json     # Tauri app configuration, permissions, and CSP
     └── src/
         ├── main.rs         # Execution entrypoint
-        └── lib.rs          # Process management, log aggregation, and proxy logic
+        └── lib.rs          # Process management, log aggregation, proxy logic, tray
 ```
 
 ---

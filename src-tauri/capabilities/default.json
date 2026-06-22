@@ -24,6 +24,9 @@
     "wireport:allow-get-local-public-ip",
     "wireport:allow-get-profile-logs",
     "wireport:allow-clear-profile-logs",
-    "wireport:allow-get-proxy-stats"
+    "wireport:allow-get-proxy-stats",
+    "wireport:allow-get-usage-overview",
+    "wireport:allow-get-usage-history",
+    "wireport:allow-reset-usage"
   ]
 }

@@ -53,4 +53,32 @@ export interface ProxyStats {
   connectedForSecs: number;
 }
 
+/** One usage window's accumulated bytes. */
+export interface UsageBucket {
+  uploaded: number;
+  downloaded: number;
+}
+
+/** Aggregate usage across time windows, returned by `get_usage_overview`. */
+export interface UsageOverview {
+  today: UsageBucket;
+  last24h: UsageBucket;
+  week: UsageBucket;
+  month: UsageBucket;
+  /** All-time total across every recorded day. */
+  total: UsageBucket;
+}
+
+/** A single day's bytes, keyed by `YYYY-MM-DD` in the usage history map. */
+export interface UsageDay {
+  uploaded: number;
+  downloaded: number;
+}
+
+/** Raw per-day usage history returned by `get_usage_history`. */
+export interface UsageHistory {
+  days: Record<string, UsageDay>;
+  lastUpdated: string | null;
+}
+
 

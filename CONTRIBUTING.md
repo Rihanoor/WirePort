@@ -42,14 +42,31 @@ To build and run WirePort locally, you will need:
 ## Submitting Pull Requests
 
 1.  Fork the repository and create your branch from `main`.
-2.  Ensure code compiles cleanly (`pnpm build`).
+2.  Ensure the project builds and type-checks cleanly (see the verification commands below).
 3.  Write clear, concise commit messages.
 4.  Open a Pull Request describing:
     *   The problem being solved or feature added.
     *   How you verified the changes.
 5.  All PRs must adhere to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
+## Verification Commands
+
+Before opening a PR, run these from the project root and confirm they pass with no errors or warnings:
+
+```bash
+# Frontend — type-check and production build
+pnpm exec tsc --noEmit
+pnpm exec vite build
+
+# Backend (from src-tauri/) — format, lint, and tests
+cd src-tauri
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
 ## Code Style
 
-*   **Frontend**: TypeScript with React. Keep components modular. Formatting is managed via standard ESLint and TS settings.
-*   **Backend**: Rust. Run `cargo fmt` and `cargo clippy` inside `src-tauri` before committing.
+*   **Frontend**: TypeScript with React. Keep components modular and prefer small, reusable building blocks (e.g. `Toggle`, `Sparkline`). All styling lives in a single design-system stylesheet (`src/App.css`) driven by CSS custom properties — reuse tokens rather than hardcoding colors. The app ships no ESLint/Prettier config today; match the surrounding code.
+*   **Backend**: Rust. Keep command handlers thin and push logic into testable free functions (see `parse_wg_config` and its tests). Run `cargo fmt` and `cargo clippy` inside `src-tauri` before committing.
+*   **Design language**: WirePort follows a deliberate "instrument, not dashboard" aesthetic — tinted-ink surfaces, a single signal-green accent reserved for "tunnel live" semantics, monospace (`IBM Plex Mono`) for measured values and the native system font for labels. When adding UI, derive colors from the `:root` tokens rather than introducing new hex values.

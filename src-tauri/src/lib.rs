@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
@@ -357,19 +357,21 @@ fn save_settings(app_handle: tauri::AppHandle, settings: AppSettings) -> Result<
 
     let file_path = app_dir.join("settings.json");
     if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create settings directory: {}", e))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create settings directory: {}", e))?;
     }
 
     let content = serde_json::to_string(&settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
 
-    std::fs::write(&file_path, content)
-        .map_err(|e| format!("Failed to write settings: {}", e))?;
+    std::fs::write(&file_path, content).map_err(|e| format!("Failed to write settings: {}", e))?;
 
     // Update disable_logs in ProcessManager
     let disable = settings.disable_logs.unwrap_or(false);
     if let Some(state) = app_handle.try_state::<ProcessManager>() {
-        state.disable_logs.store(disable, std::sync::atomic::Ordering::Relaxed);
+        state
+            .disable_logs
+            .store(disable, std::sync::atomic::Ordering::Relaxed);
         if disable {
             let mut logs_map = state.logs.lock();
             logs_map.clear();
@@ -427,6 +429,202 @@ struct StatsCacheEntry {
     last_polled_at: std::time::Instant,
 }
 
+// ============================================================
+// Persistent data-usage tracking
+// ============================================================
+
+/// One calendar day's accumulated bytes. Serialized as `{uploaded, downloaded}`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default, Copy)]
+pub struct UsageDay {
+    pub uploaded: u64,
+    pub downloaded: u64,
+}
+
+/// On-disk shape of `usage.json`. `days` is keyed by local `YYYY-MM-DD`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+pub struct UsageStore {
+    #[serde(default)]
+    pub days: std::collections::BTreeMap<String, UsageDay>,
+    #[serde(default)]
+    pub last_updated: Option<String>,
+}
+
+/// Aggregated view handed to the frontend: each window is an uploaded/downloaded pair.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBucket {
+    pub uploaded: u64,
+    pub downloaded: u64,
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageOverview {
+    pub today: UsageBucket,
+    pub last_24h: UsageBucket,
+    pub week: UsageBucket,
+    pub month: UsageBucket,
+    /// All-time total across every recorded day.
+    pub total: UsageBucket,
+}
+
+/// Local calendar-day key, e.g. `2026-06-21`. Uses the machine's local timezone
+/// via chrono's `Local`, matching how a user thinks about "today".
+fn today_key() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// Prune days older than `retain_days` to bound `usage.json` growth.
+fn prune_old_days(store: &mut UsageStore, retain_days: i64) {
+    let cutoff = chrono::Local::now() - chrono::Duration::days(retain_days);
+    let cutoff_key = cutoff.format("%Y-%m-%d").to_string();
+    store.days.retain(|k, _| k.as_str() >= cutoff_key.as_str());
+}
+
+/// Read `usage.json` from app_data_dir, or return an empty store if missing/invalid.
+fn load_usage_store(app_handle: &tauri::AppHandle) -> UsageStore {
+    let app_dir = match app_handle.path().app_data_dir() {
+        Ok(d) => d,
+        Err(_) => return UsageStore::default(),
+    };
+    let file_path = app_dir.join("usage.json");
+    let content = match std::fs::read_to_string(&file_path) {
+        Ok(c) => c,
+        Err(_) => return UsageStore::default(),
+    };
+    serde_json::from_str(&content).unwrap_or_default()
+}
+
+/// Write `usage.json` atomically: write to a temp file then rename, so a crash
+/// mid-write can't corrupt the existing store.
+fn write_usage_store(app_handle: &tauri::AppHandle, store: &UsageStore) -> Result<(), String> {
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    std::fs::create_dir_all(&app_dir).map_err(|e| format!("Failed to create dir: {}", e))?;
+
+    let file_path = app_dir.join("usage.json");
+    let tmp_path = app_dir.join("usage.json.tmp");
+
+    let mut to_write = store.clone();
+    to_write.last_updated =
+        Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    prune_old_days(&mut to_write, 90);
+
+    let json = serde_json::to_string(&to_write)
+        .map_err(|e| format!("Failed to serialize usage: {}", e))?;
+    std::fs::write(&tmp_path, json)
+        .map_err(|e| format!("Failed to write usage temp file: {}", e))?;
+    std::fs::rename(&tmp_path, &file_path)
+        .map_err(|e| format!("Failed to rename usage file: {}", e))?;
+    Ok(())
+}
+
+/// Add a byte delta to today's bucket in the in-memory store.
+fn record_usage_delta(store: &mut UsageStore, uploaded_delta: u64, downloaded_delta: u64) {
+    if uploaded_delta == 0 && downloaded_delta == 0 {
+        return;
+    }
+    let key = today_key();
+    let day = store.days.entry(key).or_default();
+    day.uploaded = day.uploaded.saturating_add(uploaded_delta);
+    day.downloaded = day.downloaded.saturating_add(downloaded_delta);
+}
+
+/// Compute the {today, last24h, week, month} overview from the day map.
+/// `week`/`month` roll up by local calendar-day membership.
+fn compute_usage_overview(store: &UsageStore) -> UsageOverview {
+    let now = chrono::Local::now();
+    let today = now.format("%Y-%m-%d").to_string();
+
+    // Last 24h: strictly, a rolling 24-hour window. Day-granularity data can't
+    // represent sub-day slices, so we approximate by counting today + yesterday
+    // for the rolling window (the best a day-keyed store can do without timestamps).
+    let yesterday = (now - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let week_start = (now - chrono::Duration::days(6))
+        .format("%Y-%m-%d")
+        .to_string();
+    // First day of the current month.
+    let month_start = {
+        use chrono::Datelike;
+        now.date_naive()
+            .with_day(1)
+            .unwrap_or_else(|| now.date_naive())
+            .format("%Y-%m-%d")
+            .to_string()
+    };
+
+    let mut today_b = UsageBucket {
+        uploaded: 0,
+        downloaded: 0,
+    };
+    let mut last24_b = UsageBucket {
+        uploaded: 0,
+        downloaded: 0,
+    };
+    let mut week_b = UsageBucket {
+        uploaded: 0,
+        downloaded: 0,
+    };
+    let mut month_b = UsageBucket {
+        uploaded: 0,
+        downloaded: 0,
+    };
+    // All-time total: every recorded day, regardless of window.
+    let mut total_b = UsageBucket {
+        uploaded: 0,
+        downloaded: 0,
+    };
+
+    for (key, day) in &store.days {
+        let bucket = UsageBucket {
+            uploaded: day.uploaded,
+            downloaded: day.downloaded,
+        };
+        // All-time accumulator.
+        total_b = UsageBucket {
+            uploaded: total_b.uploaded + bucket.uploaded,
+            downloaded: total_b.downloaded + bucket.downloaded,
+        };
+        if key == &today {
+            today_b = UsageBucket {
+                uploaded: today_b.uploaded + bucket.uploaded,
+                downloaded: today_b.downloaded + bucket.downloaded,
+            };
+        }
+        if key == &today || key == &yesterday {
+            last24_b = UsageBucket {
+                uploaded: last24_b.uploaded + bucket.uploaded,
+                downloaded: last24_b.downloaded + bucket.downloaded,
+            };
+        }
+        if key.as_str() >= week_start.as_str() {
+            week_b = UsageBucket {
+                uploaded: week_b.uploaded + bucket.uploaded,
+                downloaded: week_b.downloaded + bucket.downloaded,
+            };
+        }
+        if key.as_str() >= month_start.as_str() {
+            month_b = UsageBucket {
+                uploaded: month_b.uploaded + bucket.uploaded,
+                downloaded: month_b.downloaded + bucket.downloaded,
+            };
+        }
+    }
+
+    UsageOverview {
+        today: today_b,
+        last_24h: last24_b,
+        week: week_b,
+        month: month_b,
+        total: total_b,
+    }
+}
+
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyStats {
@@ -438,6 +636,67 @@ pub struct ProxyStats {
     pub last_handshake: String,
     pub last_handshake_age_secs: Option<u64>,
     pub connected_for_secs: u64,
+}
+
+/// Fetch the final byte totals for a live profile, record the tail delta into
+/// the usage store, and persist `usage.json`. Call this BEFORE killing the
+/// child or removing the stats cache entry — wireproxy's counters die with the
+/// process, so this is the only chance to capture traffic since the last poll.
+///
+/// `info_port` must come from a still-running `RunningProcess`.
+fn flush_profile_usage_blocking(
+    app_handle: &tauri::AppHandle,
+    state: &ProcessManager,
+    profile_id: &str,
+    info_port: u16,
+) {
+    // Best-effort final /metrics fetch (short timeout — the process is about to die).
+    let url = format!("http://127.0.0.1:{}/metrics", info_port);
+    let body = match reqwest::blocking::get(&url) {
+        Ok(res) if res.status().is_success() => res.text().unwrap_or_default(),
+        _ => String::new(),
+    };
+
+    let mut tx_bytes: u64 = 0;
+    let mut rx_bytes: u64 = 0;
+    for line in body.lines() {
+        if let Some(eq_idx) = line.find('=') {
+            let key = line[..eq_idx].trim();
+            let val = line[eq_idx + 1..].trim();
+            match key {
+                "tx_bytes" => tx_bytes = val.parse().unwrap_or(0),
+                "rx_bytes" => rx_bytes = val.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+
+    // Diff against the last recorded baseline and accumulate.
+    let (up_delta, down_delta) = {
+        let mut stats_map = state.stats_cache.lock();
+        if let Some(entry) = stats_map.get_mut(profile_id) {
+            let up = tx_bytes.saturating_sub(entry.last_tx_bytes);
+            let down = rx_bytes.saturating_sub(entry.last_rx_bytes);
+            entry.last_tx_bytes = tx_bytes;
+            entry.last_rx_bytes = rx_bytes;
+            (up, down)
+        } else {
+            (0, 0)
+        }
+    };
+
+    let mut dirty = false;
+    {
+        let mut usage = state.usage_store.lock();
+        if up_delta > 0 || down_delta > 0 {
+            record_usage_delta(&mut usage, up_delta, down_delta);
+            dirty = true;
+        }
+    }
+    if dirty {
+        let snapshot = state.usage_store.lock().clone();
+        let _ = write_usage_store(app_handle, &snapshot);
+    }
 }
 
 pub struct ProcessManager {
@@ -452,6 +711,8 @@ pub struct ProcessManager {
     profiles_cache: Mutex<Option<Vec<serde_json::Value>>>,
     /// Shared HTTP client reused across stats polling and health checks.
     http_client: reqwest::Client,
+    /// Persistent data-usage store, mirrored in memory and flushed to usage.json.
+    usage_store: Mutex<UsageStore>,
     pub disable_logs: std::sync::atomic::AtomicBool,
 }
 
@@ -516,7 +777,10 @@ fn parse_worker_log(message: &str) -> Option<WorkerType> {
 }
 
 fn append_log(state: &ProcessManager, profile_id: &str, level: &str, message: &str) {
-    if state.disable_logs.load(std::sync::atomic::Ordering::Relaxed) {
+    if state
+        .disable_logs
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         return;
     }
     let clean_message = strip_wireproxy_prefix(message);
@@ -983,8 +1247,14 @@ fn stop_wireproxy(
     profile_id: String,
     state: tauri::State<'_, ProcessManager>,
 ) -> Result<(), String> {
+    // Capture the live process first so we can flush its final byte totals
+    // to usage.json BEFORE killing it (wireproxy's counters die with the process).
     let proc_opt = {
         let mut map = state.processes.lock();
+        let info_port = map.get(&profile_id).map(|p| p.info_port);
+        if let Some(port) = info_port {
+            flush_profile_usage_blocking(&app_handle, &state, &profile_id, port);
+        }
         // Clear stats cache when stopping
         {
             let mut stats_map = state.stats_cache.lock();
@@ -1139,9 +1409,27 @@ async fn get_proxy_stats(
                 0
             };
 
-            entry.last_tx_bytes = tx_bytes;
-            entry.last_rx_bytes = rx_bytes;
-            entry.last_polled_at = now;
+            // Persist this poll's byte delta into the usage store. The deltas
+            // (tx_bytes - last_tx_bytes / rx_bytes - last_rx_bytes) are the
+            // actual traffic since the last poll — non-negative because we
+            // already checked >= above; clamp to 0 otherwise.
+            let up_delta = tx_bytes.saturating_sub(entry.last_tx_bytes);
+            let down_delta = rx_bytes.saturating_sub(entry.last_rx_bytes);
+            if up_delta > 0 || down_delta > 0 {
+                drop(stats_map); // release before taking the usage lock
+                {
+                    let mut usage = state.usage_store.lock();
+                    record_usage_delta(&mut usage, up_delta, down_delta);
+                }
+                stats_map = state.stats_cache.lock();
+            }
+
+            // Re-fetch the entry (the borrow was invalidated by the lock dance above).
+            if let Some(entry) = stats_map.get_mut(&profile_id) {
+                entry.last_tx_bytes = tx_bytes;
+                entry.last_rx_bytes = rx_bytes;
+                entry.last_polled_at = now;
+            }
 
             (up, down)
         }
@@ -1193,6 +1481,37 @@ async fn get_proxy_stats(
         last_handshake_age_secs,
         connected_for_secs,
     })
+}
+
+/// Returns the {today, last24h, week, month} aggregate usage overview, computed
+/// from the in-memory day map. Read-only and lockless on disk.
+#[tauri::command]
+fn get_usage_overview(state: tauri::State<'_, ProcessManager>) -> Result<UsageOverview, String> {
+    let store = state.usage_store.lock();
+    Ok(compute_usage_overview(&store))
+}
+
+/// Returns the raw per-day usage history (`{days: {"2026-06-21": {...}}, lastUpdated}`),
+/// for an optional future chart. Ordered oldest-first because BTreeMap sorts keys.
+#[tauri::command]
+fn get_usage_history(state: tauri::State<'_, ProcessManager>) -> Result<UsageStore, String> {
+    Ok(state.usage_store.lock().clone())
+}
+
+/// Clears all accumulated usage. Persists the empty store immediately.
+#[tauri::command]
+fn reset_usage(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, ProcessManager>,
+) -> Result<(), String> {
+    {
+        let mut store = state.usage_store.lock();
+        store.days.clear();
+        store.last_updated =
+            Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    }
+    let snapshot = state.usage_store.lock().clone();
+    write_usage_store(&app_handle, &snapshot)
 }
 
 #[derive(serde::Serialize)]
@@ -1627,14 +1946,34 @@ fn update_last_connected_at(app_handle: &tauri::AppHandle, profile_id: &str) -> 
 
 fn quit_app(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<ProcessManager>();
-    let mut map = state.processes.lock();
-    for (profile_id, mut proc) in map.drain() {
-        let _ = proc.child.kill();
-        let _ = proc.child.wait();
-        // Clear stats cache
-        let mut stats_map = state.stats_cache.lock();
-        stats_map.remove(&profile_id);
+
+    // Flush final byte totals for every running profile BEFORE killing —
+    // wireproxy's counters die with the process, so this is the only chance
+    // to capture traffic since the last poll.
+    {
+        let map = state.processes.lock();
+        for (profile_id, proc) in map.iter() {
+            flush_profile_usage_blocking(app_handle, &state, profile_id, proc.info_port);
+        }
     }
+
+    {
+        let mut map = state.processes.lock();
+        for (profile_id, mut proc) in map.drain() {
+            let _ = proc.child.kill();
+            let _ = proc.child.wait();
+            // Clear stats cache
+            let mut stats_map = state.stats_cache.lock();
+            stats_map.remove(&profile_id);
+        }
+    }
+
+    // Final persistent write so quit captures everything accumulated this session.
+    {
+        let snapshot = state.usage_store.lock().clone();
+        let _ = write_usage_store(app_handle, &snapshot);
+    }
+
     app_handle.exit(0);
 }
 
@@ -1789,6 +2128,7 @@ pub fn run() {
             selected_profile_id: Mutex::new(None),
             profiles_cache: Mutex::new(None),
             http_client,
+            usage_store: Mutex::new(UsageStore::default()),
             disable_logs: std::sync::atomic::AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
@@ -1807,9 +2147,36 @@ pub fn run() {
             get_profile_logs,
             clear_profile_logs,
             get_proxy_stats,
+            get_usage_overview,
+            get_usage_history,
+            reset_usage,
             set_selected_profile
         ])
         .setup(|app| {
+            // Load persistent usage store from disk into memory.
+            {
+                let store = load_usage_store(app.handle());
+                if let Some(state) = app.try_state::<ProcessManager>() {
+                    *state.usage_store.lock() = store;
+                }
+            }
+
+            // Periodic 30s flush: persist usage.json so a crash never loses more
+            // than ~30s of accumulated traffic. The thread owns a weak-ish handle
+            // clone and exits when the app does.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    let state = match handle.try_state::<ProcessManager>() {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let store = state.usage_store.lock().clone();
+                    let _ = write_usage_store(&handle, &store);
+                });
+            }
+
             // Load settings to set initial state of disable_logs
             if let Some(state) = app.try_state::<ProcessManager>() {
                 if let Ok(app_dir) = app.path().app_data_dir() {
@@ -1928,11 +2295,27 @@ pub fn run() {
                 }
             } else if let tauri::WindowEvent::Destroyed = event {
                 if let Some(state) = window.try_state::<ProcessManager>() {
+                    // Flush final byte totals before killing children.
+                    {
+                        let map = state.processes.lock();
+                        let app_handle = window.app_handle();
+                        for (profile_id, proc) in map.iter() {
+                            flush_profile_usage_blocking(
+                                app_handle,
+                                &state,
+                                profile_id,
+                                proc.info_port,
+                            );
+                        }
+                    }
                     let mut map = state.processes.lock();
                     for (_, mut proc) in map.drain() {
                         let _ = proc.child.kill();
                         let _ = proc.child.wait();
                     }
+                    // Persist anything accumulated this session.
+                    let snapshot = state.usage_store.lock().clone();
+                    let _ = write_usage_store(window.app_handle(), &snapshot);
                 }
             } else if matches!(
                 event,
@@ -2097,5 +2480,149 @@ PrivateKey = key
         assert_eq!(classify_stderr_line("ERROR: bad thing"), "ERROR");
         assert_eq!(classify_stderr_line("warning: deprecated"), "WARN");
         assert_eq!(classify_stderr_line("just info"), "DEBUG");
+    }
+
+    #[test]
+    fn today_key_is_iso_date() {
+        let key = today_key();
+        // YYYY-MM-DD shape: 4 digits, dash, 2 digits, dash, 2 digits.
+        assert_eq!(key.len(), 10);
+        assert_eq!(key.chars().nth(4), Some('-'));
+        assert_eq!(key.chars().nth(7), Some('-'));
+    }
+
+    #[test]
+    fn record_usage_delta_accumulates_into_today() {
+        let mut store = UsageStore::default();
+        let key = today_key();
+
+        record_usage_delta(&mut store, 100, 200);
+        record_usage_delta(&mut store, 50, 25);
+
+        let day = &store.days[&key];
+        assert_eq!(day.uploaded, 150);
+        assert_eq!(day.downloaded, 225);
+    }
+
+    #[test]
+    fn record_usage_delta_ignores_zero() {
+        let mut store = UsageStore::default();
+        record_usage_delta(&mut store, 0, 0);
+        assert!(
+            store.days.is_empty(),
+            "zero delta should not create a day entry"
+        );
+    }
+
+    #[test]
+    fn compute_usage_overview_sums_windows() {
+        let today = today_key();
+        let yesterday = (chrono::Local::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let ten_days_ago = (chrono::Local::now() - chrono::Duration::days(10))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let mut store = UsageStore::default();
+        store.days.insert(
+            today.clone(),
+            UsageDay {
+                uploaded: 1000,
+                downloaded: 2000,
+            },
+        );
+        store.days.insert(
+            yesterday.clone(),
+            UsageDay {
+                uploaded: 500,
+                downloaded: 800,
+            },
+        );
+        store.days.insert(
+            ten_days_ago,
+            UsageDay {
+                uploaded: 9999,
+                downloaded: 9999,
+            }, // outside week/month-window? month still
+        );
+
+        let ov = compute_usage_overview(&store);
+
+        // Today = just today's bytes.
+        assert_eq!(ov.today.uploaded, 1000);
+        assert_eq!(ov.today.downloaded, 2000);
+
+        // Last 24h = today + yesterday (best a day-keyed store can do).
+        assert_eq!(ov.last_24h.uploaded, 1500);
+        assert_eq!(ov.last_24h.downloaded, 2800);
+
+        // Week = rolling 7 days -> today + yesterday (10 days ago excluded).
+        assert_eq!(ov.week.uploaded, 1500);
+        assert_eq!(ov.week.downloaded, 2800);
+
+        // Month = first-of-month to now -> all three (assuming 10 days ago is
+        // still this month; if today is the 1st-10th, ten_days_ago rolls into
+        // last month and the assertion below still holds because month sum
+        // would then exclude it — so we assert month >= week).
+        assert!(
+            ov.month.uploaded >= ov.week.uploaded,
+            "month should include at least the week's bytes"
+        );
+        assert!(
+            ov.month.downloaded >= ov.week.downloaded,
+            "month should include at least the week's bytes"
+        );
+
+        // All-time total = sum of all three day entries (1000+500+9999, 2000+800+9999).
+        assert_eq!(ov.total.uploaded, 11499);
+        assert_eq!(ov.total.downloaded, 12799);
+    }
+
+    #[test]
+    fn compute_usage_overview_empty_store_reports_zero() {
+        let store = UsageStore::default();
+        let ov = compute_usage_overview(&store);
+        assert_eq!(ov.today.uploaded, 0);
+        assert_eq!(ov.today.downloaded, 0);
+        assert_eq!(ov.last_24h.uploaded, 0);
+        assert_eq!(ov.week.uploaded, 0);
+        assert_eq!(ov.month.uploaded, 0);
+        assert_eq!(ov.total.uploaded, 0);
+        assert_eq!(ov.total.downloaded, 0);
+    }
+
+    #[test]
+    fn prune_old_days_removes_entries_past_retention() {
+        let mut store = UsageStore::default();
+        let old = (chrono::Local::now() - chrono::Duration::days(120))
+            .format("%Y-%m-%d")
+            .to_string();
+        let recent = (chrono::Local::now() - chrono::Duration::days(5))
+            .format("%Y-%m-%d")
+            .to_string();
+        store.days.insert(
+            old,
+            UsageDay {
+                uploaded: 1,
+                downloaded: 1,
+            },
+        );
+        store.days.insert(
+            recent.clone(),
+            UsageDay {
+                uploaded: 2,
+                downloaded: 2,
+            },
+        );
+
+        prune_old_days(&mut store, 90);
+
+        assert!(!store.days.contains_key(
+            &(chrono::Local::now() - chrono::Duration::days(120))
+                .format("%Y-%m-%d")
+                .to_string()
+        ));
+        assert!(store.days.contains_key(&recent));
     }
 }
