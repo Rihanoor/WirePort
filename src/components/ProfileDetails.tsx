@@ -846,6 +846,13 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                       </div>
                     </div>
 
+                    <div className="health-metric">
+                      <span className="metric-label">Last Handshake</span>
+                      <div className="metric-value font-mono">
+                        {stats ? formatHandshakeAge(stats.lastHandshakeAgeSecs) : "Never"}
+                      </div>
+                    </div>
+
                     <div className="health-metric span-2">
                       <span className="metric-label">Last Error</span>
                       <div className={`metric-value error-message-box ${health && !health.success ? "has-error" : ""}`}>
@@ -856,6 +863,20 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                         ) : (
                           "None"
                         )}
+                      </div>
+                    </div>
+
+                    <div className="health-metric">
+                      <span className="metric-label">Download Speed</span>
+                      <div className="metric-value font-mono">
+                        {stats ? formatSpeed(stats.downloadSpeedBytesPerSec) : "0 KB/s"}
+                      </div>
+                    </div>
+
+                    <div className="health-metric">
+                      <span className="metric-label">Upload Speed</span>
+                      <div className="metric-value font-mono">
+                        {stats ? formatSpeed(stats.uploadSpeedBytesPerSec) : "0 KB/s"}
                       </div>
                     </div>
                   </div>

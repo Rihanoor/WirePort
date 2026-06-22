@@ -102,7 +102,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       {/* Top Banner / Hero */}
       <div className="dashboard-hero">
         <div className="hero-content">
-          <h1 className="hero-title">Overview</h1>
+          <h1 className="hero-title">Dashboard</h1>
           <p className="hero-subtitle">
             Manage WireGuard tunnels and the local proxy endpoints they expose.
           </p>

@@ -22,7 +22,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         className="sidebar-brand" 
         onClick={() => onProfileSelect("overview")}
         style={{ cursor: "pointer" }}
-        title="Go to overview"
+        title="Go to Dashboard"
       >
         <div className="brand-logo">
           <Shield size={20} className="brand-icon" />
@@ -39,18 +39,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <Plus size={16} />
           <span>Import</span>
         </button>
-        <button
-          className={`settings-sidebar-btn btn btn-full ${selectedProfileId === "overview" ? "active" : ""}`}
-          onClick={() => onProfileSelect("overview")}
-          title="Overview"
-        >
-          <LayoutDashboard size={16} />
-          <span>Overview</span>
-        </button>
       </div>
 
       {/* Profiles List */}
       <div className="sidebar-nav">
+        <button
+          className={`settings-sidebar-btn btn btn-full ${selectedProfileId === "overview" ? "active" : ""}`}
+          onClick={() => onProfileSelect("overview")}
+          title="Dashboard"
+          style={{ marginBottom: "16px", marginTop: "12px" }}
+        >
+          <LayoutDashboard size={16} />
+          <span>Dashboard</span>
+        </button>
+
         <div className="nav-section-title">WireGuard Profiles</div>
         {profiles.length === 0 ? (
           <div className="sidebar-empty-state">
